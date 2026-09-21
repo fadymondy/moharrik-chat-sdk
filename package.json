@@ -1,0 +1,87 @@
+{
+  "name": "moharrik-chat",
+  "version": "0.1.0",
+  "description": "The Moharrik chat widget and headless chat client — works in plain JS, React, Vue, Svelte, Angular or anything else.",
+  "keywords": [
+    "moharrik",
+    "chat",
+    "live-chat",
+    "support",
+    "widget",
+    "react",
+    "vue",
+    "inbox"
+  ],
+  "license": "MIT",
+  "author": "Fady Mondy",
+  "homepage": "https://moharrik.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fadymondy/moharrik-chat-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fadymondy/moharrik-chat-sdk/issues"
+  },
+  "type": "module",
+  "sideEffects": [
+    "./dist/chat.js"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js",
+      "require": "./dist/react.cjs"
+    },
+    "./vue": {
+      "types": "./dist/vue.d.ts",
+      "import": "./dist/vue.js",
+      "require": "./dist/vue.cjs"
+    },
+    "./chat.js": "./dist/chat.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node test/core.test.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=17",
+    "vue": ">=3"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "esbuild": "^0.24.0",
+    "react": "^19.0.0",
+    "typescript": "^5.7.2",
+    "vue": "^3.5.13"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

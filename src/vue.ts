@@ -1,0 +1,137 @@
+/**
+ * Vue 3 bindings.
+ *
+ * As a plugin (widget on every page):
+ *
+ *   import { createApp } from "vue"
+ *   import { MoharrikChatPlugin } from "moharrik-chat/vue"
+ *   createApp(App).use(MoharrikChatPlugin, { key: "cwk_…", apiOrigin: "https://app.moharrik.com" })
+ *
+ * As a component:
+ *
+ *   <MoharrikChat widget-key="cwk_…" api-origin="https://app.moharrik.com" />
+ *
+ * Or headless, for your own UI:
+ *
+ *   const { messages, send } = useMoharrikChat({ key, apiOrigin })
+ */
+
+import { defineComponent, onBeforeUnmount, onMounted, ref, shallowRef, type App, type PropType, type Ref } from "vue"
+
+import { createChat, type ChatError, type ChatMessage, type ChatOptions, type ChatStatus, type Locale } from "./core"
+import { mount, type ChatWidget, type WidgetOptions } from "./widget"
+
+export type UseMoharrikChat = {
+  messages: Ref<ChatMessage[]>
+  status: Ref<ChatStatus | null>
+  error: Ref<ChatError | null>
+  sending: Ref<boolean>
+  send: (body: string) => Promise<void>
+  refresh: () => Promise<void>
+  reset: () => void
+}
+
+/** Headless composable: reactive state and actions, no DOM. */
+export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
+  const client = createChat(options)
+  const messages = ref<ChatMessage[]>([]) as Ref<ChatMessage[]>
+  const status = ref<ChatStatus | null>(null) as Ref<ChatStatus | null>
+  const error = ref<ChatError | null>(null) as Ref<ChatError | null>
+  const sending = ref(false)
+
+  const offs = [
+    client.on("messages", (m) => (messages.value = m)),
+    client.on("status", (s) => (status.value = s)),
+    client.on("error", (e) => (error.value = e)),
+  ]
+
+  onMounted(() => client.start())
+  onBeforeUnmount(() => {
+    for (const off of offs) off()
+    client.destroy()
+  })
+
+  return {
+    messages,
+    status,
+    error,
+    sending,
+    async send(body: string) {
+      sending.value = true
+      error.value = null
+      try {
+        await client.send(body)
+      } catch {
+        /* surfaced through the error event */
+      } finally {
+        sending.value = false
+      }
+    },
+    async refresh() {
+      await client.refresh()
+    },
+    reset: () => client.reset(),
+  }
+}
+
+/** The packaged widget as a component. Renders nothing; the widget owns its own shadow root. */
+export const MoharrikChat = defineComponent({
+  name: "MoharrikChat",
+  props: {
+    widgetKey: { type: String, required: true },
+    apiOrigin: { type: String, required: true },
+    locale: { type: String as PropType<Locale>, default: undefined },
+    theme: { type: String as PropType<"light" | "dark">, default: undefined },
+    position: { type: String as PropType<"start" | "end">, default: undefined },
+    accent: { type: String, default: undefined },
+    greeting: { type: String, default: undefined },
+    title: { type: String, default: undefined },
+    launcher: { type: Boolean, default: true },
+    defaultOpen: { type: Boolean, default: false },
+  },
+  emits: ["ready"],
+  setup(props, { emit }) {
+    const widget = shallowRef<ChatWidget | null>(null)
+    onMounted(() => {
+      widget.value = mount({
+        key: props.widgetKey,
+        apiOrigin: props.apiOrigin,
+        locale: props.locale,
+        theme: props.theme,
+        position: props.position,
+        accent: props.accent,
+        greeting: props.greeting,
+        title: props.title,
+        launcher: props.launcher,
+      })
+      if (props.defaultOpen) widget.value.open()
+      emit("ready", widget.value)
+    })
+    onBeforeUnmount(() => {
+      widget.value?.unmount()
+      widget.value = null
+    })
+    return () => null
+  },
+})
+
+export type MoharrikChatPluginOptions = Omit<WidgetOptions, "target">
+
+/**
+ * Install the widget once for the whole app. `app.config.globalProperties.$moharrikChat`
+ * and `inject("moharrikChat")` both give you the widget, so any component can
+ * open it from its own button.
+ */
+export const MoharrikChatPlugin = {
+  install(app: App, options: MoharrikChatPluginOptions) {
+    if (typeof window === "undefined") return // SSR: nothing to mount
+    const widget = mount(options)
+    app.config.globalProperties.$moharrikChat = widget
+    app.provide("moharrikChat", widget)
+    app.component("MoharrikChat", MoharrikChat)
+  },
+}
+
+export { createChat, mount } from "./index"
+export type { ChatClient, ChatError, ChatMessage, ChatOptions, ChatStatus, Locale } from "./core"
+export type { ChatWidget, WidgetOptions } from "./widget"

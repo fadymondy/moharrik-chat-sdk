@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Moharrik chat — plain HTML</title>
+    <style>
+      body { font: 16px/1.6 system-ui, sans-serif; max-width: 42rem; margin: 4rem auto; padding: 0 1rem; }
+      button { font: inherit; padding: .5rem 1rem; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <h1>A customer's own site</h1>
+    <p>The widget is the one line at the bottom of this file. Nothing else is needed.</p>
+    <p><button onclick="MoharrikChat.open()">Need help?</button></p>
+
+    <!-- Replace the key with your own from Inbox -> Chat widgets, and make sure
+         this page's origin is on the key's allowed origins. -->
+    <script src="https://app.moharrik.com/chat/v1.js" data-key="cwk_your_key" defer></script>
+  </body>
+</html>
