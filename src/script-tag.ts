@@ -45,7 +45,13 @@ function boot() {
     position: attr("data-position") as "start" | "end" | undefined,
     accent: attr("data-accent"),
     greeting: attr("data-greeting"),
+    greetingAr: attr("data-greeting-ar"),
     title: attr("data-title"),
+    titleAr: attr("data-title-ar"),
+    // The attributes are a copy of the widget's settings taken when the
+    // snippet was copied: they paint the first frame, and the settings in
+    // Moharrik win once they arrive, so an old snippet stays current.
+    prefer: "server",
     launcher: el.getAttribute("data-launcher") !== "false",
     visitor: { name: attr("data-visitor-name"), email: attr("data-visitor-email") },
   })
