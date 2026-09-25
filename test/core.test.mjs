@@ -206,3 +206,158 @@ test("missing options fail loudly at construction", () => {
   assert.throws(() => createChat({ apiOrigin: ORIGIN }), /key/)
   assert.throws(() => createChat({ key: KEY }), /apiOrigin/)
 })
+
+// ---- MH-382: config, presence, unread, lead, live -----------------------------
+
+import { quickActionsFor } from "../dist/index.js"
+
+test("the config is read, and anything unsafe in it is dropped", async () => {
+  const chat = createChat({
+    key: KEY,
+    apiOrigin: ORIGIN,
+    eventSourceImpl: null,
+    fetchImpl: async (url) => {
+      assert.equal(String(url), `${ORIGIN}/api/chat/${KEY}/config`)
+      return json({
+        greeting: "Hi there", accent: "red;}body{display:none", theme: "dark", position: "start",
+        invite: true, invite_after_seconds: 1, presence: "online",
+        quick_actions: [{ label: "Pricing", message: "How much?", path: "/pricing" }, { nope: 1 }],
+      })
+    },
+  })
+  const seen = []
+  chat.on("presence", (p) => seen.push(p))
+  const cfg = await chat.loadConfig()
+  assert.equal(cfg.greeting, "Hi there")
+  assert.equal(cfg.accent, "", "a value that is not a colour never reaches the stylesheet")
+  assert.equal(cfg.theme, "dark")
+  assert.equal(cfg.invite_after_seconds, 5, "clamped to the server's own floor")
+  assert.equal(cfg.quick_actions.length, 1)
+  assert.deepEqual(seen, ["online"])
+  assert.equal(chat.presence(), "online")
+})
+
+test("an unreachable config is not an error and not a crash", async () => {
+  const chat = createChat({ key: KEY, apiOrigin: ORIGIN, eventSourceImpl: null, fetchImpl: async () => { throw new TypeError("x") } })
+  const errors = []
+  chat.on("error", (e) => errors.push(e))
+  assert.equal(await chat.loadConfig(), null)
+  assert.equal(errors.length, 0)
+})
+
+test("quick actions follow the page and the language", () => {
+  const cfg = {
+    quick_actions: [
+      { label: "Anywhere", message: "a", path: "", locale: "" },
+      { label: "Pricing", message: "b", path: "/pricing", locale: "" },
+      { label: "Arabic only", message: "c", path: "", locale: "ar" },
+    ],
+  }
+  assert.deepEqual(quickActionsFor(cfg, "/", "en").map((a) => a.label), ["Anywhere"])
+  assert.deepEqual(quickActionsFor(cfg, "/pricing/teams", "en").map((a) => a.label), ["Anywhere", "Pricing"])
+  assert.deepEqual(quickActionsFor(cfg, "/ar/pricing", "ar").map((a) => a.label), ["Anywhere", "Pricing", "Arabic only"])
+  assert.deepEqual(quickActionsFor(null, "/", "en"), [])
+})
+
+test("the first message is a lead, once", async () => {
+  await withWindow(async () => {
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: null,
+      fetchImpl: async (url, init) =>
+        init?.method === "POST" ? json({ visitor_token: "cvt_lead", sent: true }, 201) : json({ messages: [], status: "open" }),
+    })
+    const leads = []
+    chat.on("lead", (d) => leads.push(d))
+    await chat.send("one")
+    await chat.send("two")
+    chat.stop()
+    assert.deepEqual(leads, [{ visitorToken: "cvt_lead" }])
+  })
+})
+
+test("unread replies are counted and cleared by markRead", async () => {
+  await withWindow(async (storage) => {
+    storage.setItem(`moharrik.chat.${KEY}`, "cvt_u")
+    const posts = []
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: null,
+      fetchImpl: async (url, init) => {
+        if (init?.method === "POST") {
+          posts.push({ url: String(url), body: JSON.parse(init.body) })
+          return json({ unread: 0 })
+        }
+        return json({ messages: [{ id: "r", direction: "out", body: "Hi", created_at: "" }], status: "open", unread: 2, presence: "away" })
+      },
+    })
+    const counts = []
+    chat.on("unread", (n) => counts.push(n))
+    await chat.refresh()
+    assert.equal(chat.unread(), 2)
+    assert.equal(chat.presence(), "away")
+    await chat.markRead()
+    assert.equal(chat.unread(), 0)
+    assert.deepEqual(counts, [2, 0])
+    assert.equal(posts[0].url, `${ORIGIN}/api/chat/${KEY}/read`)
+    assert.equal(posts[0].body.visitor_token, "cvt_u")
+  })
+})
+
+test("a live event refetches the thread; the stream is only for this visitor", async () => {
+  await withWindow(async (storage) => {
+    storage.setItem(`moharrik.chat.${KEY}`, "cvt_live")
+    const streams = []
+    class FakeES {
+      constructor(url) {
+        this.url = url
+        this.readyState = 0
+        streams.push(this)
+      }
+      close() {
+        this.readyState = 2
+      }
+    }
+    let gets = 0
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: FakeES,
+      fetchImpl: async () => {
+        gets++
+        return json({ messages: [], status: "open" })
+      },
+    })
+    const live = []
+    chat.on("live", (v) => live.push(v))
+    chat.listen()
+    chat.listen() // idempotent
+    assert.equal(streams.length, 1)
+    assert.equal(streams[0].url, `${ORIGIN}/api/chat/${KEY}/events?visitor_token=cvt_live`)
+    streams[0].onopen()
+    assert.equal(chat.isLive(), true)
+    const before = gets
+    streams[0].onmessage({ data: '{"kind":"message"}' })
+    await new Promise((r) => setTimeout(r, 0))
+    assert.equal(gets, before + 1, "an event is a hint to refetch, not the data")
+    streams[0].readyState = 2
+    streams[0].onerror()
+    assert.equal(chat.isLive(), false, "a dropped stream falls back to polling")
+    assert.deepEqual(live, [true, false])
+    chat.destroy()
+  })
+})
+
+test("a 429 reads as slow_down with the wait", async () => {
+  await withWindow(async () => {
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: null,
+      fetchImpl: async () => new Response("{}", { status: 429, headers: { "Retry-After": "12" } }),
+    })
+    await assert.rejects(() => chat.send("hi"), (err) => err.kind === "slow_down" && /12 seconds/.test(err.message))
+  })
+})

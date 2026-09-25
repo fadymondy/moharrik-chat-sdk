@@ -6,7 +6,18 @@
  * `moharrik-chat/react` and `moharrik-chat/vue`.
  */
 
-export { createChat, ChatError } from "./core"
-export type { ChatClient, ChatEvents, ChatMessage, ChatOptions, ChatStatus, ChatErrorKind, Locale } from "./core"
+export { createChat, ChatError, quickActionsFor } from "./core"
+export type {
+  ChatClient,
+  ChatConfig,
+  ChatEvents,
+  ChatMessage,
+  ChatOptions,
+  ChatStatus,
+  ChatErrorKind,
+  Locale,
+  Presence,
+  QuickAction,
+} from "./core"
 export { mount } from "./widget"
 export type { ChatWidget, WidgetOptions } from "./widget"

@@ -3,14 +3,22 @@
  *
  * Everything else in this package (the React component, the Vue plugin, the
  * script tag build) is a thin wrapper around `createChat`. The core talks to
- * two public endpoints on a Moharrik workspace:
+ * the public endpoints of one Moharrik chat widget:
  *
+ *   GET  /api/chat/{key}/config     greeting, look, invitation, quick actions, presence
  *   POST /api/chat/{key}/messages   the visitor writes
  *   GET  /api/chat/{key}/messages   the visitor's own thread
+ *   POST /api/chat/{key}/read       the visitor has seen the team's replies
+ *   GET  /api/chat/{key}/events     a live stream for the visitor's own thread (SSE)
  *
  * The widget key is public on purpose. What protects it is the origin
  * allow-list on the key: a key embedded on a site you did not allow is
  * refused, and the refusal is what `onError` reports.
+ *
+ * Live updates follow fadymondy.com's rule: the stream makes a reply arrive
+ * QUICKLY, the thread endpoint makes it arrive AT ALL. The client listens when
+ * it can and keeps polling while the conversation is on screen either way, so
+ * a proxy that blocks the stream makes chat slower, never silent.
  */
 
 export type Locale = "en" | "ar"
@@ -25,7 +33,36 @@ export type ChatMessage = {
 
 export type ChatStatus = "open" | "snoozed" | "closed"
 
-export type ChatErrorKind = "blocked" | "unknown" | "network" | "too_long" | "server"
+/** Whether anybody on the team is around. A word, never a time. */
+export type Presence = "online" | "away" | "offline"
+
+export type QuickAction = {
+  label: string
+  /** Sent as the visitor's first message when picked. */
+  message: string
+  /** Only on pages whose path starts with this. Empty: every page. */
+  path?: string
+  /** Only in this language. Empty: both. */
+  locale?: "" | Locale
+}
+
+/** What the workspace configured for this widget (Inbox → Chat widgets). */
+export type ChatConfig = {
+  greeting: string
+  greeting_ar: string
+  title: string
+  title_ar: string
+  accent: string
+  theme: "auto" | "light" | "dark"
+  position: "start" | "end"
+  invite: boolean
+  invite_after_seconds: number
+  quick_actions: QuickAction[]
+  lead_event: boolean
+  presence: Presence
+}
+
+export type ChatErrorKind = "blocked" | "unknown" | "network" | "too_long" | "server" | "slow_down"
 
 export class ChatError extends Error {
   constructor(
@@ -51,6 +88,8 @@ export type ChatOptions = {
   locale?: Locale
   /** How often to poll for replies while a conversation is open, in ms (default 5000, min 1000). */
   pollInterval?: number
+  /** Listen for replies over a live stream when the browser can (default true). Polling stays as the fallback. */
+  live?: boolean
   /** Remember the conversation between page loads (default true). Off = every reload starts fresh. */
   persist?: boolean
   /** Storage key prefix, when one page hosts more than one widget (default `moharrik.chat`). */
@@ -58,6 +97,8 @@ export type ChatOptions = {
   /** Optional visitor details attached when the conversation is created. */
   visitor?: { name?: string; email?: string }
   fetchImpl?: typeof fetch
+  /** EventSource constructor; defaults to the browser's. Pass `null` to never stream. */
+  eventSourceImpl?: typeof EventSource | null
 }
 
 export type ChatEvents = {
@@ -68,6 +109,16 @@ export type ChatEvents = {
   error: (error: ChatError) => void
   /** Fires once, when a conversation is created and its resume token is issued. */
   conversation: (visitorToken: string) => void
+  /** The widget's configuration, when it arrives or changes. */
+  config: (config: ChatConfig) => void
+  /** Whether the team is around, whenever it is read. */
+  presence: (presence: Presence) => void
+  /** Team replies this visitor has not seen yet. */
+  unread: (count: number) => void
+  /** The visitor's first message created a conversation: a lead. */
+  lead: (detail: { visitorToken: string }) => void
+  /** The live stream connected (true) or dropped back to polling (false). */
+  live: (connected: boolean) => void
 }
 
 export type ChatClient = {
@@ -75,13 +126,24 @@ export type ChatClient = {
   send(body: string): Promise<ChatMessage[]>
   /** Fetch the thread now. Safe to call before any message exists (returns []). */
   refresh(): Promise<ChatMessage[]>
+  /** Fetch the widget's configuration (and presence). Never throws: an unreachable config returns null. */
+  loadConfig(): Promise<ChatConfig | null>
   /** Start polling for replies. Called for you by `send`. */
   start(): void
-  /** Stop polling (do this when your UI closes). */
+  /** Stop polling (do this when your UI closes). The live stream keeps listening. */
   stop(): void
+  /** Listen for replies on the live stream, if a conversation exists. Called for you. */
+  listen(): void
+  /** Tell the team the visitor has seen their replies. */
+  markRead(): Promise<void>
   /** Everything received so far. */
   messages(): ChatMessage[]
   status(): ChatStatus | null
+  config(): ChatConfig | null
+  presence(): Presence | null
+  unread(): number
+  /** Whether the live stream is connected right now. */
+  isLive(): boolean
   /** The resume token, if a conversation exists. */
   visitorToken(): string | null
   /** Forget the conversation on this browser; the next send starts a new one. */
@@ -91,6 +153,10 @@ export type ChatClient = {
 }
 
 const MAX_BODY = 8000
+
+// With the stream connected, polling is only a safety net for a stream that
+// died quietly (a sleeping laptop, a proxy that stopped forwarding).
+const LIVE_SAFETY_POLL = 30_000
 
 function readStorage(k: string): string | null {
   try {
@@ -109,11 +175,60 @@ function writeStorage(k: string, v: string | null) {
   }
 }
 
-function errorFor(status: number): ChatError {
+function errorFor(status: number, retryAfter?: string | null): ChatError {
   if (status === 403) return new ChatError("blocked", "This chat is not available on this site.", status)
   if (status === 404) return new ChatError("unknown", "This chat is not set up.", status)
   if (status === 400) return new ChatError("too_long", "That message is too long.", status)
+  if (status === 429) {
+    const s = Number(retryAfter)
+    const wait = Number.isFinite(s) && s > 0 ? ` Try again in ${Math.ceil(s)} seconds.` : ""
+    return new ChatError("slow_down", `Please slow down a little.${wait}`, status)
+  }
   return new ChatError("server", "That did not send. Try again.", status)
+}
+
+const ACCENT = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i
+
+/** Keeps only what a widget can safely use from a config response. */
+function cleanConfig(raw: Partial<ChatConfig>): ChatConfig {
+  const str = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : "")
+  const actions = Array.isArray(raw.quick_actions) ? raw.quick_actions : []
+  return {
+    greeting: str(raw.greeting, 500),
+    greeting_ar: str(raw.greeting_ar, 500),
+    title: str(raw.title, 60),
+    title_ar: str(raw.title_ar, 60),
+    // It ends up in a stylesheet: a colour or nothing.
+    accent: typeof raw.accent === "string" && ACCENT.test(raw.accent) ? raw.accent : "",
+    theme: raw.theme === "light" || raw.theme === "dark" ? raw.theme : "auto",
+    position: raw.position === "start" ? "start" : "end",
+    invite: raw.invite === true,
+    invite_after_seconds: Math.min(600, Math.max(5, Number(raw.invite_after_seconds) || 25)),
+    quick_actions: actions
+      .filter((a): a is QuickAction => !!a && typeof a.label === "string" && typeof a.message === "string")
+      .slice(0, 8)
+      .map((a) => ({
+        label: a.label.slice(0, 40),
+        message: a.message.slice(0, 500),
+        path: typeof a.path === "string" ? a.path : "",
+        locale: a.locale === "en" || a.locale === "ar" ? a.locale : "",
+      })),
+    lead_event: raw.lead_event !== false,
+    presence: raw.presence === "online" || raw.presence === "away" ? raw.presence : "offline",
+  }
+}
+
+/**
+ * The quick actions for one page and language (fadymondy.com FM-137: the
+ * openers follow the page). An action with no path is everywhere.
+ */
+export function quickActionsFor(config: ChatConfig | null, pathname: string, locale: Locale): QuickAction[] {
+  if (!config) return []
+  // /ar/pricing and /en/pricing both match /pricing, as on fadymondy.com.
+  const bare = pathname.replace(/^\/[a-z]{2}(?=\/|$)/i, "") || "/"
+  return config.quick_actions.filter(
+    (a) => (!a.locale || a.locale === locale) && (!a.path || pathname.startsWith(a.path) || bare.startsWith(a.path)),
+  )
 }
 
 /**
@@ -127,16 +242,28 @@ export function createChat(options: ChatOptions): ChatClient {
 
   const doFetch = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
   if (!doFetch) throw new Error("moharrik-chat: no fetch available; pass `fetchImpl`")
+  const ES: typeof EventSource | null =
+    options.live === false || options.eventSourceImpl === null
+      ? null
+      : (options.eventSourceImpl ?? (typeof EventSource === "function" ? EventSource : null))
 
   const persist = options.persist !== false
   const storeKey = `${options.storagePrefix ?? "moharrik.chat"}.${options.key}`
   const pollEvery = Math.max(1000, options.pollInterval ?? 5000)
-  const base = `${origin}/api/chat/${encodeURIComponent(options.key)}/messages`
+  const root = `${origin}/api/chat/${encodeURIComponent(options.key)}`
+  const base = `${root}/messages`
 
   let visitorToken: string | null = persist ? readStorage(storeKey) : null
   let messages: ChatMessage[] = []
   let status: ChatStatus | null = null
+  let config: ChatConfig | null = null
+  let presence: Presence | null = null
+  let unread = 0
   let timer: ReturnType<typeof setInterval> | null = null
+  let timerEvery = 0
+  let polling = false
+  let stream: EventSource | null = null
+  let live = false
   let destroyed = false
 
   const handlers: { [K in keyof ChatEvents]: Set<ChatEvents[K]> } = {
@@ -144,6 +271,11 @@ export function createChat(options: ChatOptions): ChatClient {
     status: new Set(),
     error: new Set(),
     conversation: new Set(),
+    config: new Set(),
+    presence: new Set(),
+    unread: new Set(),
+    lead: new Set(),
+    live: new Set(),
   }
 
   function emit<E extends keyof ChatEvents>(event: E, ...args: Parameters<ChatEvents[E]>) {
@@ -158,6 +290,37 @@ export function createChat(options: ChatOptions): ChatClient {
   function setMessages(next: ChatMessage[]) {
     messages = next
     emit("messages", messages)
+  }
+
+  function setPresence(p: Presence | undefined) {
+    if (!p || p === presence) return
+    presence = p
+    emit("presence", p)
+  }
+
+  function setUnread(n: number) {
+    if (n === unread) return
+    unread = n
+    emit("unread", n)
+  }
+
+  async function loadConfig(): Promise<ChatConfig | null> {
+    if (destroyed) return config
+    try {
+      const res = await doFetch(`${root}/config`, { headers: { Accept: "application/json" } })
+      if (!res.ok) {
+        // A refused origin or a deleted key is worth saying once; the widget
+        // still works from its tag attributes if the config is merely unreachable.
+        if (res.status === 403 || res.status === 404) fail(errorFor(res.status))
+        return config
+      }
+      config = cleanConfig((await res.json()) as Partial<ChatConfig>)
+      emit("config", config)
+      setPresence(config.presence)
+      return config
+    } catch {
+      return config
+    }
   }
 
   async function refresh(): Promise<ChatMessage[]> {
@@ -178,13 +341,34 @@ export function createChat(options: ChatOptions): ChatClient {
       else fail(errorFor(res.status))
       return messages
     }
-    const data = (await res.json()) as { messages?: ChatMessage[]; status?: ChatStatus }
+    const data = (await res.json()) as {
+      messages?: ChatMessage[]
+      status?: ChatStatus
+      unread?: number
+      presence?: Presence
+    }
     if (data.status && data.status !== status) {
       status = data.status
       emit("status", status)
     }
+    setPresence(data.presence)
+    if (typeof data.unread === "number") setUnread(data.unread)
     setMessages(data.messages ?? [])
     return messages
+  }
+
+  async function markRead(): Promise<void> {
+    if (!visitorToken || destroyed || unread === 0) return
+    setUnread(0)
+    try {
+      await doFetch(`${root}/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ visitor_token: visitorToken }),
+      })
+    } catch {
+      /* the next refresh brings the true count back */
+    }
   }
 
   async function send(body: string): Promise<ChatMessage[]> {
@@ -194,9 +378,12 @@ export function createChat(options: ChatOptions): ChatClient {
 
     const payload: Record<string, unknown> = { body: text }
     if (visitorToken) payload.visitor_token = visitorToken
-    else if (options.visitor) {
-      if (options.visitor.name) payload.name = options.visitor.name
-      if (options.visitor.email) payload.email = options.visitor.email
+    else {
+      if (options.visitor?.name) payload.name = options.visitor.name
+      if (options.visitor?.email) payload.email = options.visitor.email
+      // Where the conversation started, for whoever answers it.
+      if (typeof location !== "undefined") payload.page_url = location.href
+      if (options.locale) payload.locale = options.locale
     }
 
     let res: Response
@@ -209,44 +396,106 @@ export function createChat(options: ChatOptions): ChatClient {
     } catch {
       throw fail(new ChatError("network", "Could not reach the chat server."))
     }
-    if (!res.ok) throw fail(errorFor(res.status))
+    if (!res.ok) throw fail(errorFor(res.status, res.headers?.get?.("Retry-After")))
 
     const data = (await res.json()) as { visitor_token?: string }
     if (data.visitor_token && data.visitor_token !== visitorToken) {
+      const first = !visitorToken
       visitorToken = data.visitor_token
       if (persist) writeStorage(storeKey, visitorToken)
       emit("conversation", visitorToken)
+      // The first message is the lead; later ones are the conversation (FM-130).
+      if (first) emit("lead", { visitorToken })
     }
     start()
+    listen()
     return refresh()
   }
 
+  function schedule() {
+    if (!polling || destroyed) return
+    const every = live ? Math.max(pollEvery, LIVE_SAFETY_POLL) : pollEvery
+    if (timer && timerEvery === every) return
+    if (timer) clearInterval(timer)
+    timerEvery = every
+    timer = setInterval(() => void refresh(), every)
+  }
+
   function start() {
-    if (timer || destroyed) return
+    if (polling || destroyed) return
+    polling = true
     void refresh()
-    timer = setInterval(() => void refresh(), pollEvery)
+    schedule()
   }
 
   function stop() {
+    polling = false
     if (!timer) return
     clearInterval(timer)
     timer = null
   }
 
+  function setLive(v: boolean) {
+    if (v === live) return
+    live = v
+    emit("live", v)
+    schedule() // back to the fast poll when the stream drops, the slow one when it is up
+  }
+
+  function listen() {
+    if (!ES || stream || !visitorToken || destroyed) return
+    const token = visitorToken
+    let es: EventSource
+    try {
+      es = new ES(`${root}/events?visitor_token=${encodeURIComponent(token)}`)
+    } catch {
+      return // the poll carries on
+    }
+    stream = es
+    es.onopen = () => setLive(true)
+    es.onmessage = () => {
+      // The event says only "changed"; the thread endpoint is the data.
+      void refresh()
+    }
+    es.onerror = () => {
+      setLive(false)
+      // A closed stream (a refused token, a deleted widget) is not retried by
+      // the browser; the poll carries on and reports what is wrong.
+      if (es.readyState === 2) {
+        if (stream === es) stream = null
+      }
+    }
+  }
+
+  function closeStream() {
+    stream?.close()
+    stream = null
+    setLive(false)
+  }
+
   function reset() {
+    closeStream()
     visitorToken = null
     if (persist) writeStorage(storeKey, null)
     setMessages([])
+    setUnread(0)
     status = null
   }
 
   return {
     send,
     refresh,
+    loadConfig,
     start,
     stop,
+    listen,
+    markRead,
     messages: () => messages,
     status: () => status,
+    config: () => config,
+    presence: () => presence,
+    unread: () => unread,
+    isLive: () => live,
     visitorToken: () => visitorToken,
     reset,
     on(event, handler) {
@@ -258,6 +507,7 @@ export function createChat(options: ChatOptions): ChatClient {
     destroy() {
       destroyed = true
       stop()
+      closeStream()
       for (const key of Object.keys(handlers) as (keyof ChatEvents)[]) handlers[key].clear()
     },
   }

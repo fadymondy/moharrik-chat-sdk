@@ -40,7 +40,27 @@ configure. Options go on the same tag:
 | `data-accent` | `#00A0A8` | Brand colour for the launcher, header and the visitor's bubbles. |
 | `data-title` | "Chat with us" | Panel title. |
 | `data-greeting` | — | First line shown in an empty panel. |
+| `data-greeting-ar`, `data-title-ar` | — | The same, when the widget runs in Arabic. |
 | `data-launcher` | `true` | `false` hides the floating button — open it yourself. |
+
+The snippet Moharrik gives you already carries these, copied from the widget's settings. They paint
+the first frame. Once the widget has read its settings from Moharrik (Inbox → Chat widgets →
+Customize), those win, so a change to the greeting, colours, invitation or quick actions reaches every
+page that embeds the key without anyone re-pasting the snippet.
+
+### What the widget does
+
+- **Greeting and presence.** The panel opens on your greeting. Its header says whether anyone on
+  your team is around: online, away, or a plain "we reply here as soon as we can".
+- **Live replies.** While the page is open, replies arrive over a live stream (Server-Sent Events) and
+  the launcher shows an unread count. If the stream cannot connect, the widget polls instead.
+- **Quick actions.** Ready-made first messages, optionally limited to pages whose path starts with a
+  prefix (`/pricing`) or to one language. Picking one sends it.
+- **Invitation.** Optionally opens itself once per visit after N seconds. It starts no conversation
+  until the visitor writes.
+- **Lead event.** The visitor's first message dispatches a `moharrik:lead` DOM event on `window`
+  (`detail: { lead_type: "chat", widget_key }`). When the widget is set to report leads, it also sends a
+  `generate_lead` event to `gtag` and `dataLayer`, if the page has them.
 | `data-visitor-name`, `data-visitor-email` | — | Attach who this is, if you already know. |
 
 Open it from your own button:
