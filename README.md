@@ -106,22 +106,28 @@ const [chat, setChat] = useState(null)
 import { useMoharrikChat } from "moharrik-chat/react"
 
 function Support() {
-  const { messages, send, sending, error } = useMoharrikChat({
+  const { messages, send, sending, error, presence, unread, markRead } = useMoharrikChat({
     key: "cwk_your_key",
     apiOrigin: "https://app.moharrik.com",
   })
 
   return (
     <>
+      <p>{presence === "online" ? "We're online" : "We'll reply soon"}</p>
       {messages.map((m) => (
         <p key={m.id} className={m.direction === "in" ? "mine" : "theirs"}>{m.body}</p>
       ))}
       {error && <p role="alert">{error.message}</p>}
       <button disabled={sending} onClick={() => send("Hello")}>Send</button>
+      <button onClick={() => markRead()}>Mark read ({unread})</button>
     </>
   )
 }
 ```
+
+`useMoharrikChat` also returns `presence` (`"online" | "away" | "offline" | null` — `null` until
+the widget's config has loaded) and `unread` (team replies this visitor has not seen yet), plus
+`markRead()` to clear it.
 
 ---
 
@@ -167,9 +173,21 @@ Headless, for your own UI:
 ```vue
 <script setup>
 import { useMoharrikChat } from "moharrik-chat/vue"
-const { messages, send, error } = useMoharrikChat({ key: "cwk_…", apiOrigin: "https://app.moharrik.com" })
+const { messages, send, error, presence, unread, markRead } = useMoharrikChat({
+  key: "cwk_…",
+  apiOrigin: "https://app.moharrik.com",
+})
 </script>
+
+<template>
+  <p>{{ presence === "online" ? "We're online" : "We'll reply soon" }}</p>
+  <button @click="markRead()">Mark read ({{ unread }})</button>
+</template>
 ```
+
+`useMoharrikChat` also returns `presence` (a `Ref<"online" | "away" | "offline" | null>` — `null`
+until the widget's config has loaded) and `unread` (a `Ref<number>` of team replies this visitor
+has not seen yet), plus `markRead()` to clear it.
 
 ---
 

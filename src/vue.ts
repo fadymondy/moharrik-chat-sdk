@@ -18,7 +18,15 @@
 
 import { defineComponent, onBeforeUnmount, onMounted, ref, shallowRef, type App, type PropType, type Ref } from "vue"
 
-import { createChat, type ChatError, type ChatMessage, type ChatOptions, type ChatStatus, type Locale } from "./core"
+import {
+  createChat,
+  type ChatError,
+  type ChatMessage,
+  type ChatOptions,
+  type ChatStatus,
+  type Locale,
+  type Presence,
+} from "./core"
 import { mount, type ChatWidget, type WidgetOptions } from "./widget"
 
 export type UseMoharrikChat = {
@@ -26,8 +34,14 @@ export type UseMoharrikChat = {
   status: Ref<ChatStatus | null>
   error: Ref<ChatError | null>
   sending: Ref<boolean>
+  /** Whether the team is around right now. `null` until the config has loaded. */
+  presence: Ref<Presence | null>
+  /** Team replies this visitor has not seen yet. */
+  unread: Ref<number>
   send: (body: string) => Promise<void>
   refresh: () => Promise<void>
+  /** Tell the team the visitor has seen their replies. Clears `unread`. */
+  markRead: () => Promise<void>
   reset: () => void
 }
 
@@ -38,14 +52,21 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
   const status = ref<ChatStatus | null>(null) as Ref<ChatStatus | null>
   const error = ref<ChatError | null>(null) as Ref<ChatError | null>
   const sending = ref(false)
+  const presence = ref<Presence | null>(null) as Ref<Presence | null>
+  const unread = ref(0)
 
   const offs = [
     client.on("messages", (m) => (messages.value = m)),
     client.on("status", (s) => (status.value = s)),
     client.on("error", (e) => (error.value = e)),
+    client.on("presence", (p) => (presence.value = p)),
+    client.on("unread", (n) => (unread.value = n)),
   ]
 
-  onMounted(() => client.start())
+  onMounted(() => {
+    client.start()
+    void client.loadConfig()
+  })
   onBeforeUnmount(() => {
     for (const off of offs) off()
     client.destroy()
@@ -56,6 +77,8 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
     status,
     error,
     sending,
+    presence,
+    unread,
     async send(body: string) {
       sending.value = true
       error.value = null
@@ -69,6 +92,9 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
     },
     async refresh() {
       await client.refresh()
+    },
+    async markRead() {
+      await client.markRead()
     },
     reset: () => client.reset(),
   }
@@ -133,5 +159,5 @@ export const MoharrikChatPlugin = {
 }
 
 export { createChat, mount } from "./index"
-export type { ChatClient, ChatError, ChatMessage, ChatOptions, ChatStatus, Locale } from "./core"
+export type { ChatClient, ChatError, ChatMessage, ChatOptions, ChatStatus, Locale, Presence } from "./core"
 export type { ChatWidget, WidgetOptions } from "./widget"

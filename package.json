@@ -1,6 +1,6 @@
 {
   "name": "moharrik-chat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The Moharrik chat widget and headless chat client — works in plain JS, React, Vue, Svelte, Angular or anything else.",
   "keywords": [
     "moharrik",

@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import { createChat, type ChatError, type ChatMessage, type ChatOptions, type ChatStatus } from "./core"
+import { createChat, type ChatError, type ChatMessage, type ChatOptions, type ChatStatus, type Presence } from "./core"
 import { mount, type ChatWidget, type WidgetOptions } from "./widget"
 
 export type UseMoharrikChat = {
@@ -19,8 +19,14 @@ export type UseMoharrikChat = {
   status: ChatStatus | null
   error: ChatError | null
   sending: boolean
+  /** Whether the team is around right now. `null` until the config has loaded. */
+  presence: Presence | null
+  /** Team replies this visitor has not seen yet. */
+  unread: number
   send: (body: string) => Promise<void>
   refresh: () => Promise<void>
+  /** Tell the team the visitor has seen their replies. Clears `unread`. */
+  markRead: () => Promise<void>
   reset: () => void
 }
 
@@ -51,16 +57,23 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
   const [status, setStatus] = useState<ChatStatus | null>(null)
   const [error, setError] = useState<ChatError | null>(null)
   const [sending, setSending] = useState(false)
+  const [presence, setPresence] = useState<Presence | null>(null)
+  const [unread, setUnread] = useState(0)
 
   useEffect(() => {
     const offMessages = client.on("messages", setMessages)
     const offStatus = client.on("status", setStatus)
     const offError = client.on("error", setError)
+    const offPresence = client.on("presence", setPresence)
+    const offUnread = client.on("unread", setUnread)
     client.start()
+    void client.loadConfig()
     return () => {
       offMessages()
       offStatus()
       offError()
+      offPresence()
+      offUnread()
       client.destroy()
     }
   }, [client])
@@ -84,9 +97,13 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
     await client.refresh()
   }, [client])
 
+  const markRead = useCallback(async () => {
+    await client.markRead()
+  }, [client])
+
   const reset = useCallback(() => client.reset(), [client])
 
-  return { messages, status, error, sending, send, refresh, reset }
+  return { messages, status, error, sending, presence, unread, send, refresh, markRead, reset }
 }
 
 export type MoharrikChatProps = Omit<WidgetOptions, "key" | "target"> & {
@@ -160,5 +177,5 @@ export function MoharrikChat({ widgetKey, defaultOpen, onReady, ...rest }: Mohar
 }
 
 export { createChat, mount } from "./index"
-export type { ChatClient, ChatError, ChatMessage, ChatOptions, ChatStatus, Locale } from "./core"
+export type { ChatClient, ChatError, ChatMessage, ChatOptions, ChatStatus, Locale, Presence } from "./core"
 export type { ChatWidget, WidgetOptions } from "./widget"
