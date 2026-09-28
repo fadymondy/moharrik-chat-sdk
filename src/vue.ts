@@ -38,10 +38,14 @@ export type UseMoharrikChat = {
   presence: Ref<Presence | null>
   /** Team replies this visitor has not seen yet. */
   unread: Ref<number>
+  /** Whether an agent is composing a reply right now. */
+  isAgentTyping: Ref<boolean>
   send: (body: string) => Promise<void>
   refresh: () => Promise<void>
   /** Tell the team the visitor has seen their replies. Clears `unread`. */
   markRead: () => Promise<void>
+  /** Tell the team this visitor is composing a reply, or has stopped. Throttled; see `ChatClient.setComposing`. */
+  setComposing: (composing: boolean) => void
   reset: () => void
 }
 
@@ -54,6 +58,7 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
   const sending = ref(false)
   const presence = ref<Presence | null>(null) as Ref<Presence | null>
   const unread = ref(0)
+  const isAgentTyping = ref(false)
 
   const offs = [
     client.on("messages", (m) => (messages.value = m)),
@@ -61,6 +66,7 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
     client.on("error", (e) => (error.value = e)),
     client.on("presence", (p) => (presence.value = p)),
     client.on("unread", (n) => (unread.value = n)),
+    client.on("agentTyping", (v) => (isAgentTyping.value = v)),
   ]
 
   onMounted(() => {
@@ -79,6 +85,7 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
     sending,
     presence,
     unread,
+    isAgentTyping,
     async send(body: string) {
       sending.value = true
       error.value = null
@@ -95,6 +102,9 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
     },
     async markRead() {
       await client.markRead()
+    },
+    setComposing(composing: boolean) {
+      client.setComposing(composing)
     },
     reset: () => client.reset(),
   }

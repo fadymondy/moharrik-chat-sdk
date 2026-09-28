@@ -54,6 +54,11 @@ page that embeds the key without anyone re-pasting the snippet.
   your team is around: online, away, or a plain "we reply here as soon as we can".
 - **Live replies.** While the page is open, replies arrive over a live stream (Server-Sent Events) and
   the launcher shows an unread count. If the stream cannot connect, the widget polls instead.
+- **Typing indicators, both ways.** When an agent is composing a reply, the header swaps its
+  online/away line for "Typing…" — cleared the moment a reply arrives, the agent stops, or ~6s pass
+  with nothing refreshing it (a dropped "stopped" event should not leave it stuck). The visitor's own
+  typing reaches the team the same way: `composing` while they write (throttled to at most once every
+  ~3s), `paused` the moment they stop for ~4s, blur the box, or send.
 - **Quick actions.** Ready-made first messages, optionally limited to pages whose path starts with a
   prefix (`/pricing`) or to one language. Picking one sends it.
 - **Invitation.** Optionally opens itself once per visit after N seconds. It starts no conversation
@@ -127,7 +132,8 @@ function Support() {
 
 `useMoharrikChat` also returns `presence` (`"online" | "away" | "offline" | null` — `null` until
 the widget's config has loaded) and `unread` (team replies this visitor has not seen yet), plus
-`markRead()` to clear it.
+`markRead()` to clear it. `isAgentTyping` is `true` while an agent is composing a reply — wire your
+own textarea's `onChange`/`onBlur`/submit to `setComposing(true | false)` to send the same signal back.
 
 ---
 
@@ -187,7 +193,9 @@ const { messages, send, error, presence, unread, markRead } = useMoharrikChat({
 
 `useMoharrikChat` also returns `presence` (a `Ref<"online" | "away" | "offline" | null>` — `null`
 until the widget's config has loaded) and `unread` (a `Ref<number>` of team replies this visitor
-has not seen yet), plus `markRead()` to clear it.
+has not seen yet), plus `markRead()` to clear it. `isAgentTyping` is a `Ref<boolean>`, `true` while
+an agent is composing a reply — call `setComposing(true | false)` from your own textarea's input,
+blur and submit handlers to send the same signal back.
 
 ---
 
@@ -234,10 +242,17 @@ chat.stop()    // when your UI closes
 | `visitor` | — | `{ name, email }` attached when the conversation is created. |
 | `fetchImpl` | `globalThis.fetch` | Bring your own fetch (tests, SSR). |
 
-`ChatClient`: `send(body)`, `refresh()`, `start()`, `stop()`, `messages()`, `status()`,
+`ChatClient`: `send(body)`, `refresh()`, `start()`, `stop()`, `markRead()`, `setComposing(composing)`,
+`messages()`, `status()`, `presence()`, `unread()`, `isAgentTyping()`, `isLive()`,
 `visitorToken()`, `reset()`, `on(event, handler)`, `destroy()`.
 
-Events: `messages`, `status`, `error`, `conversation`.
+Events: `messages`, `status`, `error`, `conversation`, `config`, `presence`, `unread`, `lead`, `live`,
+`agentTyping`.
+
+`setComposing(true)` tells the team this visitor is writing a reply; call it on every keystroke — it
+throttles itself to at most one call to the server every ~3s, and sends `false` on its own after ~4s
+without another `true`. Call `setComposing(false)` yourself on send and on blur, so the team's view
+never shows a stale "typing…" after the visitor has actually stopped.
 
 ### `mount(options)` → `ChatWidget`
 

@@ -361,3 +361,225 @@ test("a 429 reads as slow_down with the wait", async () => {
     await assert.rejects(() => chat.send("hi"), (err) => err.kind === "slow_down" && /12 seconds/.test(err.message))
   })
 })
+
+// ---- MH-668: agent typing (incoming) and visitor composing (outgoing) --------
+
+test("an SSE typing event marks the agent typing; a paused event clears it", async () => {
+  await withWindow(async (storage) => {
+    storage.setItem(`moharrik.chat.${KEY}`, "cvt_typ")
+    const streams = []
+    class FakeES {
+      constructor(url) {
+        this.url = url
+        streams.push(this)
+      }
+      close() {}
+    }
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: FakeES,
+      fetchImpl: async () => json({ messages: [], status: "open" }),
+    })
+    const seen = []
+    chat.on("agentTyping", (v) => seen.push(v))
+    chat.listen()
+    streams[0].onopen()
+    assert.equal(chat.isAgentTyping(), false)
+    streams[0].onmessage({ data: '{"kind":"typing","presence":"composing"}' })
+    assert.equal(chat.isAgentTyping(), true)
+    streams[0].onmessage({ data: '{"kind":"typing","presence":""}' })
+    assert.equal(chat.isAgentTyping(), false)
+    assert.deepEqual(seen, [true, false])
+    chat.destroy()
+  })
+})
+
+test("a new message arriving resets the agent-typing flag", async () => {
+  await withWindow(async (storage) => {
+    storage.setItem(`moharrik.chat.${KEY}`, "cvt_typ2")
+    const streams = []
+    class FakeES {
+      constructor(url) {
+        this.url = url
+        streams.push(this)
+      }
+      close() {}
+    }
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: FakeES,
+      fetchImpl: async () => json({ messages: [{ id: "m", direction: "out", body: "hi", created_at: "" }], status: "open" }),
+    })
+    chat.listen()
+    streams[0].onopen()
+    streams[0].onmessage({ data: '{"kind":"typing","presence":"composing"}' })
+    assert.equal(chat.isAgentTyping(), true)
+    streams[0].onmessage({ data: '{"kind":"message"}' })
+    await new Promise((r) => setTimeout(r, 0))
+    assert.equal(chat.isAgentTyping(), false, "the reply arriving is itself a reason to stop showing it as typing")
+    chat.destroy()
+  })
+})
+
+test("agent typing clears itself after ~6s with no refreshing event", async (t) => {
+  await withWindow(async (storage) => {
+    storage.setItem(`moharrik.chat.${KEY}`, "cvt_timeout")
+    const streams = []
+    class FakeES {
+      constructor(url) {
+        this.url = url
+        streams.push(this)
+      }
+      close() {}
+    }
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: FakeES,
+      fetchImpl: async () => json({ messages: [], status: "open" }),
+    })
+    t.mock.timers.enable({ apis: ["setTimeout"] })
+    chat.listen()
+    streams[0].onopen()
+    streams[0].onmessage({ data: '{"kind":"typing","presence":"composing"}' })
+    assert.equal(chat.isAgentTyping(), true)
+    t.mock.timers.tick(5999)
+    assert.equal(chat.isAgentTyping(), true, "not yet 6s")
+    t.mock.timers.tick(1)
+    assert.equal(chat.isAgentTyping(), false, "6s with nothing refreshing it reads as stopped")
+    chat.destroy()
+  })
+})
+
+test("a refreshing typing event resets the 6s timeout", async (t) => {
+  await withWindow(async (storage) => {
+    storage.setItem(`moharrik.chat.${KEY}`, "cvt_refresh")
+    const streams = []
+    class FakeES {
+      constructor(url) {
+        this.url = url
+        streams.push(this)
+      }
+      close() {}
+    }
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: FakeES,
+      fetchImpl: async () => json({ messages: [], status: "open" }),
+    })
+    t.mock.timers.enable({ apis: ["setTimeout"] })
+    chat.listen()
+    streams[0].onopen()
+    streams[0].onmessage({ data: '{"kind":"typing","presence":"composing"}' })
+    t.mock.timers.tick(5000)
+    streams[0].onmessage({ data: '{"kind":"typing","presence":"composing"}' }) // still going, before the 6s mark
+    t.mock.timers.tick(5000)
+    assert.equal(chat.isAgentTyping(), true, "the second event pushed the timeout out")
+    chat.destroy()
+  })
+})
+
+test("setComposing is a no-op before a conversation exists", async () => {
+  await withWindow(async () => {
+    let calls = 0
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: null,
+      fetchImpl: async () => {
+        calls++
+        return json({})
+      },
+    })
+    chat.setComposing(true)
+    assert.equal(calls, 0)
+  })
+})
+
+test("outgoing composing is throttled to at most one POST every ~3s", async (t) => {
+  await withWindow(async (storage) => {
+    storage.setItem(`moharrik.chat.${KEY}`, "cvt_out")
+    const posts = []
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: null,
+      fetchImpl: async (url, init) => {
+        if (init?.method === "POST" && String(url).endsWith("/typing")) {
+          posts.push(JSON.parse(init.body))
+          return json({})
+        }
+        return json({ messages: [], status: "open" })
+      },
+    })
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() })
+    chat.setComposing(true)
+    chat.setComposing(true)
+    chat.setComposing(true)
+    assert.deepEqual(posts.map((p) => p.presence), ["composing"], "continuous typing sends only the first composing")
+    assert.equal(posts[0].visitor_token, "cvt_out")
+    t.mock.timers.tick(2999)
+    chat.setComposing(true)
+    assert.equal(posts.length, 1, "still inside the 3s window")
+    t.mock.timers.tick(1)
+    chat.setComposing(true)
+    assert.equal(posts.length, 2, "the throttle window has passed")
+    chat.destroy()
+  })
+})
+
+test("no keystrokes for ~4s sends paused on its own", async (t) => {
+  await withWindow(async (storage) => {
+    storage.setItem(`moharrik.chat.${KEY}`, "cvt_idle")
+    const posts = []
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: null,
+      fetchImpl: async (url, init) => {
+        if (init?.method === "POST" && String(url).endsWith("/typing")) {
+          posts.push(JSON.parse(init.body))
+          return json({})
+        }
+        return json({ messages: [], status: "open" })
+      },
+    })
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() })
+    chat.setComposing(true)
+    assert.deepEqual(posts.map((p) => p.presence), ["composing"])
+    t.mock.timers.tick(3999)
+    assert.equal(posts.length, 1, "not idle yet")
+    t.mock.timers.tick(1)
+    assert.deepEqual(posts.map((p) => p.presence), ["composing", ""], "~4s of silence reads as paused on its own")
+    chat.destroy()
+  })
+})
+
+test("an explicit paused (send or blur) goes through immediately and resets the throttle", async () => {
+  await withWindow(async (storage) => {
+    storage.setItem(`moharrik.chat.${KEY}`, "cvt_pause")
+    const posts = []
+    const chat = createChat({
+      key: KEY,
+      apiOrigin: ORIGIN,
+      eventSourceImpl: null,
+      fetchImpl: async (url, init) => {
+        if (init?.method === "POST" && String(url).endsWith("/typing")) {
+          posts.push(JSON.parse(init.body))
+          return json({})
+        }
+        return json({ messages: [], status: "open" })
+      },
+    })
+    chat.setComposing(true)
+    chat.setComposing(false) // on send/blur — not throttled, unlike composing
+    assert.deepEqual(posts.map((p) => p.presence), ["composing", ""])
+    // a new message right after is not stuck behind the previous window
+    chat.setComposing(true)
+    assert.deepEqual(posts.map((p) => p.presence), ["composing", "", "composing"])
+    chat.destroy()
+  })
+})

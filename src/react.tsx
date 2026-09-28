@@ -23,10 +23,14 @@ export type UseMoharrikChat = {
   presence: Presence | null
   /** Team replies this visitor has not seen yet. */
   unread: number
+  /** Whether an agent is composing a reply right now. */
+  isAgentTyping: boolean
   send: (body: string) => Promise<void>
   refresh: () => Promise<void>
   /** Tell the team the visitor has seen their replies. Clears `unread`. */
   markRead: () => Promise<void>
+  /** Tell the team this visitor is composing a reply, or has stopped. Throttled; see `ChatClient.setComposing`. */
+  setComposing: (composing: boolean) => void
   reset: () => void
 }
 
@@ -59,6 +63,7 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
   const [sending, setSending] = useState(false)
   const [presence, setPresence] = useState<Presence | null>(null)
   const [unread, setUnread] = useState(0)
+  const [isAgentTyping, setAgentTyping] = useState(false)
 
   useEffect(() => {
     const offMessages = client.on("messages", setMessages)
@@ -66,6 +71,7 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
     const offError = client.on("error", setError)
     const offPresence = client.on("presence", setPresence)
     const offUnread = client.on("unread", setUnread)
+    const offAgentTyping = client.on("agentTyping", setAgentTyping)
     client.start()
     void client.loadConfig()
     return () => {
@@ -74,6 +80,7 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
       offError()
       offPresence()
       offUnread()
+      offAgentTyping()
       client.destroy()
     }
   }, [client])
@@ -101,9 +108,11 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
     await client.markRead()
   }, [client])
 
+  const setComposing = useCallback((composing: boolean) => client.setComposing(composing), [client])
+
   const reset = useCallback(() => client.reset(), [client])
 
-  return { messages, status, error, sending, presence, unread, send, refresh, markRead, reset }
+  return { messages, status, error, sending, presence, unread, isAgentTyping, send, refresh, markRead, setComposing, reset }
 }
 
 export type MoharrikChatProps = Omit<WidgetOptions, "key" | "target"> & {

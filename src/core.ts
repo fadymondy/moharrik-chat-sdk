@@ -119,6 +119,8 @@ export type ChatEvents = {
   lead: (detail: { visitorToken: string }) => void
   /** The live stream connected (true) or dropped back to polling (false). */
   live: (connected: boolean) => void
+  /** Whether an agent is composing a reply right now (MH-668). */
+  agentTyping: (typing: boolean) => void
 }
 
 export type ChatClient = {
@@ -136,12 +138,21 @@ export type ChatClient = {
   listen(): void
   /** Tell the team the visitor has seen their replies. */
   markRead(): Promise<void>
+  /**
+   * Tell the team this visitor is composing a reply (`true`), or has stopped
+   * (`false`). Outgoing calls with `true` are throttled to at most one every
+   * ~3 seconds; `false` always goes through immediately. A no-op before a
+   * conversation exists.
+   */
+  setComposing(composing: boolean): void
   /** Everything received so far. */
   messages(): ChatMessage[]
   status(): ChatStatus | null
   config(): ChatConfig | null
   presence(): Presence | null
   unread(): number
+  /** Whether an agent is composing a reply right now. */
+  isAgentTyping(): boolean
   /** Whether the live stream is connected right now. */
   isLive(): boolean
   /** The resume token, if a conversation exists. */
@@ -157,6 +168,19 @@ const MAX_BODY = 8000
 // With the stream connected, polling is only a safety net for a stream that
 // died quietly (a sleeping laptop, a proxy that stopped forwarding).
 const LIVE_SAFETY_POLL = 30_000
+
+// MH-668: how long an agent's "composing" is shown before it is assumed stale
+// (the server refreshes it on every keystroke-ish tick; nothing arriving for
+// this long means the paused/stopped event itself was lost, not that they are
+// still typing). And how often this visitor's own "composing" is allowed to
+// reach the server while they keep typing — mirrors the server's own
+// agentPresenceThrottle for the same reason: the input fires far more often
+// than the presence protocol on the other end wants to be hit.
+const AGENT_TYPING_TIMEOUT = 6000
+const COMPOSING_THROTTLE = 3000
+// Going quiet this long without another keystroke reads as "stopped", the
+// same as an explicit blur or send.
+const TYPING_IDLE = 4000
 
 function readStorage(k: string): string | null {
   try {
@@ -265,6 +289,10 @@ export function createChat(options: ChatOptions): ChatClient {
   let stream: EventSource | null = null
   let live = false
   let destroyed = false
+  let agentTyping = false
+  let agentTypingTimer: ReturnType<typeof setTimeout> | null = null
+  let lastComposingSent = 0
+  let composingIdleTimer: ReturnType<typeof setTimeout> | null = null
 
   const handlers: { [K in keyof ChatEvents]: Set<ChatEvents[K]> } = {
     messages: new Set(),
@@ -276,6 +304,7 @@ export function createChat(options: ChatOptions): ChatClient {
     unread: new Set(),
     lead: new Set(),
     live: new Set(),
+    agentTyping: new Set(),
   }
 
   function emit<E extends keyof ChatEvents>(event: E, ...args: Parameters<ChatEvents[E]>) {
@@ -289,7 +318,31 @@ export function createChat(options: ChatOptions): ChatClient {
 
   function setMessages(next: ChatMessage[]) {
     messages = next
+    // A refreshed thread is the agent's reply arriving (or at least catching
+    // up); either way "still typing" is stale the moment new content shows.
+    setAgentTyping(false)
     emit("messages", messages)
+  }
+
+  function setAgentTyping(v: boolean) {
+    if (agentTypingTimer) {
+      clearTimeout(agentTypingTimer)
+      agentTypingTimer = null
+    }
+    if (v === agentTyping) return
+    agentTyping = v
+    emit("agentTyping", v)
+  }
+
+  function bumpAgentTypingTimeout() {
+    if (agentTypingTimer) clearTimeout(agentTypingTimer)
+    agentTypingTimer = setTimeout(() => {
+      agentTypingTimer = null
+      if (agentTyping) {
+        agentTyping = false
+        emit("agentTyping", false)
+      }
+    }, AGENT_TYPING_TIMEOUT)
   }
 
   function setPresence(p: Presence | undefined) {
@@ -453,8 +506,23 @@ export function createChat(options: ChatOptions): ChatClient {
     }
     stream = es
     es.onopen = () => setLive(true)
-    es.onmessage = () => {
-      // The event says only "changed"; the thread endpoint is the data.
+    es.onmessage = (ev: MessageEvent) => {
+      let data: { kind?: string; presence?: string } | null = null
+      try {
+        data = JSON.parse((ev as { data: string }).data) as { kind?: string; presence?: string }
+      } catch {
+        data = null
+      }
+      if (data?.kind === "typing") {
+        // "composing" or "recording" is typing; anything else (paused, empty)
+        // clears it. Never a reason to refetch: no message exists yet.
+        const typing = data.presence === "composing" || data.presence === "recording"
+        setAgentTyping(typing)
+        if (typing) bumpAgentTypingTimeout()
+        return
+      }
+      // Any other kind ("message", "status", or an older server with no
+      // `kind` at all) says only "changed"; the thread endpoint is the data.
       void refresh()
     }
     es.onerror = () => {
@@ -473,6 +541,55 @@ export function createChat(options: ChatOptions): ChatClient {
     setLive(false)
   }
 
+  function postTyping(presence: "composing" | "") {
+    if (!visitorToken || destroyed) return
+    doFetch(`${root}/typing`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ visitor_token: visitorToken, presence }),
+    }).catch(() => {
+      /* best-effort, like markRead: the next keystroke or timeout tries again */
+    })
+  }
+
+  function clearComposingIdle() {
+    if (composingIdleTimer) {
+      clearTimeout(composingIdleTimer)
+      composingIdleTimer = null
+    }
+  }
+
+  /**
+   * Owns the whole outgoing side of typing, so a caller (the packaged widget,
+   * or your own input box) only ever has to say what just happened: `true` on
+   * every keystroke, `false` on send or blur. `true` is throttled to at most
+   * one `composing` every ~3s; going quiet for ~4s without another `true`
+   * sends `paused` on its own, the same as an explicit `false` would.
+   */
+  function setComposing(composing: boolean) {
+    if (!visitorToken || destroyed) return
+    if (composing) {
+      const now = Date.now()
+      if (now - lastComposingSent >= COMPOSING_THROTTLE) {
+        lastComposingSent = now
+        postTyping("composing")
+      }
+      clearComposingIdle()
+      composingIdleTimer = setTimeout(() => {
+        composingIdleTimer = null
+        lastComposingSent = 0
+        postTyping("")
+      }, TYPING_IDLE)
+    } else {
+      clearComposingIdle()
+      // Mirrors the server's own clearPresenceThrottle: "paused" always goes
+      // through, and it resets the window so the next "composing" (a new
+      // message) does not have to wait out a throttle from the last one.
+      lastComposingSent = 0
+      postTyping("")
+    }
+  }
+
   function reset() {
     closeStream()
     visitorToken = null
@@ -480,6 +597,8 @@ export function createChat(options: ChatOptions): ChatClient {
     setMessages([])
     setUnread(0)
     status = null
+    lastComposingSent = 0
+    clearComposingIdle()
   }
 
   return {
@@ -490,11 +609,13 @@ export function createChat(options: ChatOptions): ChatClient {
     stop,
     listen,
     markRead,
+    setComposing,
     messages: () => messages,
     status: () => status,
     config: () => config,
     presence: () => presence,
     unread: () => unread,
+    isAgentTyping: () => agentTyping,
     isLive: () => live,
     visitorToken: () => visitorToken,
     reset,
@@ -508,6 +629,11 @@ export function createChat(options: ChatOptions): ChatClient {
       destroyed = true
       stop()
       closeStream()
+      if (agentTypingTimer) {
+        clearTimeout(agentTypingTimer)
+        agentTypingTimer = null
+      }
+      clearComposingIdle()
       for (const key of Object.keys(handlers) as (keyof ChatEvents)[]) handlers[key].clear()
     },
   }

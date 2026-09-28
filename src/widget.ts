@@ -82,6 +82,7 @@ const STRINGS: Record<Locale, Record<string, string>> = {
     online: "Online now",
     away: "Away — we will reply soon",
     offline: "We reply here as soon as we can",
+    typingNow: "Typing…",
     unread: "unread replies",
     suggestions: "Suggested messages",
   },
@@ -99,6 +100,7 @@ const STRINGS: Record<Locale, Record<string, string>> = {
     online: "متصل الآن",
     away: "غير متواجد — سنرد قريبًا",
     offline: "نرد عليك هنا في أقرب وقت",
+    typingNow: "يكتب الآن…",
     unread: "ردود غير مقروءة",
     suggestions: "رسائل مقترحة",
   },
@@ -273,7 +275,14 @@ export function mount(options: WidgetOptions): ChatWidget {
     // Absent until read: an unreachable config is not evidence anybody is offline.
     dot.hidden = !p
     if (p) dot.setAttribute("data-state", p)
-    subEl.textContent = p === "online" ? t.online : p === "away" ? t.away : t.offline
+    paintSub()
+  }
+
+  // The header's second line: "typing…" wins over the plain online/away/offline
+  // word while it is true, same slot fadymondy.com uses for presence.
+  function paintSub() {
+    const p = client.presence()
+    subEl.textContent = client.isAgentTyping() ? t.typingNow : p === "online" ? t.online : p === "away" ? t.away : t.offline
   }
 
   function paintBadge(n: number) {
@@ -341,9 +350,18 @@ export function mount(options: WidgetOptions): ChatWidget {
     }
   }
 
+  // ---- outgoing typing (MH-668) -----------------------------------------------------
+  //
+  // Mirrors the header's own presence, in reverse. `client.setComposing` owns
+  // the throttle (at most one `composing` every ~3s of continuous typing) and
+  // the ~4s idle timeout on its own, so the widget only has to say what just
+  // happened: `true` on every keystroke, `false` the moment the box blurs or
+  // the message is sent — whichever comes first.
+
   async function submit(text: string) {
     text = text.trim()
     if (!text || sending) return
+    client.setComposing(false) // the message itself is the "I stopped typing" signal
     errBox.hidden = true
     sending = true
     sendBtn.disabled = true
@@ -375,6 +393,7 @@ export function mount(options: WidgetOptions): ChatWidget {
     client.on("status", () => render(client.messages())),
     client.on("config", paint),
     client.on("presence", paintPresence),
+    client.on("agentTyping", paintSub),
     client.on("unread", (n) => {
       paintBadge(n)
       if (n > 0 && isOpen()) void client.markRead()
@@ -474,7 +493,9 @@ export function mount(options: WidgetOptions): ChatWidget {
   ta.addEventListener("input", () => {
     ta.style.height = "38px"
     ta.style.height = `${Math.min(ta.scrollHeight, 110)}px`
+    client.setComposing(!!ta.value.trim()) // cleared back to empty counts as stopped
   })
+  ta.addEventListener("blur", () => client.setComposing(false))
   ta.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
@@ -508,7 +529,7 @@ export function mount(options: WidgetOptions): ChatWidget {
       media?.removeEventListener?.("change", paint)
       if (inviteTimer) clearTimeout(inviteTimer)
       if (presenceTimer) clearInterval(presenceTimer)
-      client.destroy()
+      client.destroy() // stops polling/streaming and its own composing-idle timer
       host.remove()
     },
   }
