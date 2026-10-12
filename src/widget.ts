@@ -15,9 +15,16 @@
  * per visit, an unread badge on the launcher, live replies, and a lead event
  * on the first message. All of it is configured per widget in Moharrik and
  * read from the widget's config, so a snippet pasted months ago stays current.
+ *
+ * The header shows who the visitor is talking to (the business's name and
+ * picture, or its initials on the brand colour). A widget that asks for
+ * contact details shows a short pre-chat form — name, then an email or a
+ * phone with its country code, then the message — before the first message;
+ * what was given is remembered on this browser so nobody is asked twice.
  */
 
 import {
+  checkVisitor,
   createChat,
   quickActionsFor,
   type ChatClient,
@@ -67,7 +74,7 @@ export type ChatWidget = ChatClient & {
   unmount(): void
 }
 
-const STRINGS: Record<Locale, Record<string, string>> = {
+const STRINGS = {
   en: {
     title: "Chat with us",
     placeholder: "Write a message…",
@@ -83,8 +90,24 @@ const STRINGS: Record<Locale, Record<string, string>> = {
     away: "Away — we will reply soon",
     offline: "We reply here as soon as we can",
     typingNow: "Typing…",
+    typing: "is typing",
     unread: "unread replies",
     suggestions: "Suggested messages",
+    formIntro: "So we can get back to you even after you leave, tell us how to reach you.",
+    name: "Your name",
+    email: "Email",
+    phone: "Phone (with country code)",
+    phoneHint: "e.g. +20 100 123 4567",
+    or: "Email or phone — one is enough.",
+    message: "Your message",
+    start: "Start chat",
+    errName: "Please enter your name.",
+    errEmail: "That email address does not look right.",
+    errPhone: "Add the country code, e.g. +20 100 123 4567.",
+    errContact: "Add an email or a phone number.",
+    errMessage: "Write your message.",
+    today: "Today",
+    yesterday: "Yesterday",
   },
   ar: {
     title: "تحدّث معنا",
@@ -101,10 +124,28 @@ const STRINGS: Record<Locale, Record<string, string>> = {
     away: "غير متواجد — سنرد قريبًا",
     offline: "نرد عليك هنا في أقرب وقت",
     typingNow: "يكتب الآن…",
+    typing: "يكتب الآن",
     unread: "ردود غير مقروءة",
     suggestions: "رسائل مقترحة",
+    formIntro: "لنتمكّن من الرد عليك حتى بعد مغادرتك، أخبرنا كيف نتواصل معك.",
+    name: "اسمك",
+    email: "البريد الإلكتروني",
+    phone: "رقم الهاتف (مع مفتاح الدولة)",
+    phoneHint: "مثال: ‎+20 100 123 4567",
+    or: "البريد أو الهاتف — يكفي أحدهما.",
+    message: "رسالتك",
+    start: "ابدأ المحادثة",
+    errName: "من فضلك اكتب اسمك.",
+    errEmail: "البريد الإلكتروني غير صحيح.",
+    errPhone: "أضف مفتاح الدولة، مثال: ‎+20 100 123 4567.",
+    errContact: "أضف بريدًا إلكترونيًا أو رقم هاتف.",
+    errMessage: "اكتب رسالتك.",
+    today: "اليوم",
+    yesterday: "أمس",
   },
 }
+
+type Strings = (typeof STRINGS)["en"]
 
 const DEFAULT_ACCENT = "#00A0A8"
 const ACCENT = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i
@@ -124,62 +165,132 @@ function onAccent(hex: string): string {
 
 function css(accent: string, dark: boolean, rtl: boolean, atStart: boolean): string {
   const side = atStart ? (rtl ? "right" : "left") : rtl ? "left" : "right"
-  const panelBg = dark ? "#0F1B33" : "#ffffff"
+  const bg = dark ? "#0F1B33" : "#ffffff"
+  const soft = dark ? "#132240" : "#f6f7fb"
   const fg = dark ? "#E7ECF5" : "#0B1429"
-  const muted = dark ? "#9AA6BD" : "#5B6478"
-  const line = dark ? "#24324f" : "#e4e7ee"
-  const inBubble = dark ? "#1b2a47" : "#eef1f6"
+  const muted = dark ? "#A3AEC4" : "#5B6478"
+  const line = dark ? "#26365a" : "#e4e7ee"
+  const field = dark ? "#0B1429" : "#ffffff"
+  const fieldLine = dark ? "#33456d" : "#cfd5e1"
+  const inBubble = dark ? "#1d2c4b" : "#eef1f6"
+  const danger = dark ? "#ff8b9d" : "#b4233f"
   const ink = onAccent(accent)
+  const ring = `0 0 0 3px color-mix(in srgb, ${accent} 35%, transparent)`
   return `
 :host{all:initial}
-*{box-sizing:border-box;font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans Arabic',sans-serif}
-.wrap{position:fixed;bottom:20px;${side}:20px;z-index:2147483000;direction:${rtl ? "rtl" : "ltr"};display:flex;flex-direction:column;align-items:${atStart ? "flex-start" : "flex-end"};gap:12px}
-.btn{position:relative;display:inline-flex;align-items:center;gap:8px;border:0;border-radius:999px;padding:12px 18px;cursor:pointer;font-size:14px;font-weight:600;background:${accent};color:${ink};box-shadow:0 6px 24px rgba(0,0,0,.18)}
-.btn svg{width:18px;height:18px}
-.badge{position:absolute;top:-6px;${rtl ? "left" : "right"}:-6px;min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:#d9455f;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;border:2px solid ${panelBg}}
+*{box-sizing:border-box;font-family:${rtl ? "'IBM Plex Sans Arabic','Noto Sans Arabic','Segoe UI',Tahoma," : ""}ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans Arabic',sans-serif}
+.wrap{position:fixed;bottom:20px;${side}:20px;z-index:2147483000;direction:${rtl ? "rtl" : "ltr"};display:flex;flex-direction:column;align-items:${atStart ? "flex-start" : "flex-end"};gap:14px;color:${fg};-webkit-font-smoothing:antialiased}
+button{font:inherit}
+:focus-visible{outline:2px solid ${accent};outline-offset:2px}
+.btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:999px;height:52px;min-width:52px;padding:0 20px;cursor:pointer;font-size:14.5px;font-weight:600;background:${accent};color:${ink};box-shadow:0 10px 30px -6px rgba(11,20,41,.35),0 2px 6px rgba(11,20,41,.12);transition:transform .2s ease,box-shadow .2s ease}
+.btn:hover{transform:translateY(-1px);box-shadow:0 14px 34px -6px rgba(11,20,41,.4),0 2px 6px rgba(11,20,41,.14)}
+.btn:focus-visible{outline:3px solid ${fg};outline-offset:3px}
+.btn svg{width:22px;height:22px;flex:none}
+.btn .ic-x{display:none}
+.btn.on{padding:0}
+.btn.on .lbl,.btn.on .ic-chat{display:none}
+.btn.on .ic-x{display:block}
+.badge{position:absolute;top:-4px;${rtl ? "left" : "right"}:-4px;min-width:21px;height:21px;padding:0 6px;border-radius:999px;background:#d0263f;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;border:2px solid ${bg}}
 .badge[hidden]{display:none}
-.panel{display:none;flex-direction:column;width:360px;max-width:calc(100vw - 40px);height:500px;max-height:calc(100vh - 110px);border-radius:14px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.28);background:${panelBg};color:${fg};border:1px solid ${line}}
-.panel.open{display:flex}
-.head{display:flex;align-items:center;gap:10px;padding:12px 14px;background:${accent};color:${ink}}
-.who-box{display:flex;flex-direction:column;min-width:0;flex:1}
-.ttl{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sub{font-size:11.5px;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dot{width:10px;height:10px;border-radius:50%;flex:none;box-shadow:0 0 0 2px ${ink === "#ffffff" ? "rgba(255,255,255,.55)" : "rgba(11,20,41,.35)"}}
+.panel{display:flex;flex-direction:column;width:380px;max-width:calc(100vw - 32px);height:600px;max-height:calc(100vh - 110px);max-height:calc(100dvh - 110px);border-radius:18px;overflow:hidden;background:${bg};color:${fg};border:1px solid ${line};box-shadow:0 24px 60px -12px rgba(11,20,41,.35),0 4px 14px rgba(11,20,41,.1);transform-origin:bottom ${side};opacity:0;transform:translateY(14px) scale(.97);transition:opacity .2s ease,transform .24s cubic-bezier(.2,.9,.3,1.2)}
+.panel.open{opacity:1;transform:none}
+.panel[hidden]{display:none}
+.head{display:flex;align-items:center;gap:12px;padding:14px 14px 14px 16px;background:${accent};color:${ink}}
+.av{position:relative;width:40px;height:40px;flex:none}
+.av img,.av .ini{width:40px;height:40px;border-radius:50%;object-fit:cover;display:block;background:${ink === "#ffffff" ? "rgba(255,255,255,.2)" : "rgba(11,20,41,.12)"}}
+.av .ini{display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;letter-spacing:.02em}
+.av img[hidden],.av .ini[hidden]{display:none}
+.dot{position:absolute;bottom:0;${rtl ? "left" : "right"}:0;width:12px;height:12px;border-radius:50%;border:2px solid ${accent}}
 .dot[data-state=online]{background:#22c55e}
 .dot[data-state=away]{background:#f59e0b}
 .dot[data-state=offline]{background:#94a3b8}
 .dot[hidden]{display:none}
-.x{border:0;background:transparent;cursor:pointer;font-size:20px;line-height:1;color:${ink};padding:2px 6px;border-radius:6px}
-.x:focus-visible{outline:2px solid ${ink}}
-.log{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
-.row{display:flex;flex-direction:column}
-.row.mine{align-items:flex-end}
-.row.theirs{align-items:flex-start}
-.who{font-size:11px;color:${muted};margin:0 2px 2px}
-.msg{max-width:85%;padding:8px 11px;border-radius:12px;font-size:13.5px;line-height:1.45;white-space:pre-wrap;word-break:break-word}
-.mine .msg{background:${accent};color:${ink}}
-.theirs .msg{background:${inBubble}}
-.greet{font-size:13.5px;line-height:1.5;padding:10px 12px;border-radius:12px;background:${inBubble};align-self:flex-start;max-width:90%;white-space:pre-wrap}
-.note{font-size:12.5px;color:${muted};text-align:center;padding:10px}
-.qa{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 10px}
+.who-box{display:flex;flex-direction:column;min-width:0;flex:1;gap:1px}
+.ttl{font-weight:700;font-size:15px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:0}
+.sub{font-size:12px;line-height:1.3;opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.x{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:0;background:transparent;cursor:pointer;color:${ink};border-radius:10px;flex:none}
+.x:hover{background:${ink === "#ffffff" ? "rgba(255,255,255,.16)" : "rgba(11,20,41,.08)"}}
+.x:focus-visible{outline:2px solid ${ink};outline-offset:-2px}
+.x svg{width:20px;height:20px}
+.body{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:16px 14px 8px;display:flex;flex-direction:column;background:${soft}}
+.log{display:flex;flex-direction:column;gap:2px}
+.day{align-self:center;font-size:11.5px;font-weight:600;color:${muted};background:${bg};border:1px solid ${line};border-radius:999px;padding:3px 10px;margin:10px 0 8px}
+.row{display:flex;flex-direction:column;margin-top:8px;max-width:84%}
+.row.cont{margin-top:2px}
+.row.mine{align-self:flex-end;align-items:flex-end}
+.row.theirs{align-self:flex-start;align-items:flex-start}
+.who{font-size:11.5px;font-weight:600;color:${muted};margin:0 4px 3px}
+.msg{padding:9px 13px;border-radius:16px;font-size:14px;line-height:1.5;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+.mine .msg{background:${accent};color:${ink};border-end-end-radius:5px}
+.theirs .msg{background:${inBubble};color:${fg};border-end-start-radius:5px}
+.cont.mine .msg{border-start-end-radius:5px}
+.cont.theirs .msg{border-start-start-radius:5px}
+.ts{font-size:11px;color:${muted};margin:3px 4px 0}
+.greet{font-size:14px;line-height:1.55;padding:12px 14px;border-radius:16px;border-end-start-radius:5px;background:${inBubble};align-self:flex-start;max-width:88%;white-space:pre-wrap}
+.note{font-size:12.5px;color:${muted};text-align:center;padding:10px 6px}
+.typing{align-self:flex-start;display:inline-flex;gap:4px;align-items:center;padding:12px 14px;margin-top:8px;border-radius:16px;border-end-start-radius:5px;background:${inBubble}}
+.typing[hidden]{display:none}
+.typing i{width:7px;height:7px;border-radius:50%;background:${muted};animation:mc-b 1.2s infinite ease-in-out}
+.typing i:nth-child(2){animation-delay:.15s}
+.typing i:nth-child(3){animation-delay:.3s}
+@keyframes mc-b{0%,60%,100%{transform:translateY(0);opacity:.45}30%{transform:translateY(-4px);opacity:1}}
+.qa{display:flex;flex-wrap:wrap;gap:6px;padding:8px 14px 2px;background:${soft}}
 .qa[hidden]{display:none}
-.chip{border:1px solid ${line};background:transparent;color:inherit;border-radius:999px;padding:6px 11px;font-size:12.5px;cursor:pointer;text-align:start}
+.chip{border:1px solid ${fieldLine};background:${bg};color:inherit;border-radius:999px;padding:7px 12px;font-size:13px;cursor:pointer;text-align:start;transition:border-color .15s ease,background .15s ease}
 .chip:hover{border-color:${accent}}
 .chip:disabled{opacity:.5;cursor:default}
-.err{font-size:12.5px;color:#d9455f;padding:0 12px 6px}
-.form{display:flex;gap:8px;padding:10px;border-top:1px solid ${line}}
-.ta{flex:1;resize:none;height:38px;max-height:110px;padding:9px 10px;border-radius:9px;font-size:13.5px;border:1px solid ${dark ? "#2b3a5c" : "#d7dce6"};background:${dark ? "#0B1429" : "#fff"};color:inherit}
-.ta:focus{outline:2px solid ${accent};outline-offset:1px}
-.send{border:0;border-radius:9px;padding:0 14px;cursor:pointer;font-size:13.5px;font-weight:600;background:${accent};color:${ink}}
-.send:disabled{opacity:.55;cursor:default}
+.err{font-size:12.5px;color:${danger};padding:6px 16px 0;background:${bg}}
+.err[hidden]{display:none}
+.form{display:flex;align-items:flex-end;gap:8px;padding:10px 12px 12px;border-top:1px solid ${line};background:${bg}}
+.form[hidden]{display:none}
+.ta,.in{width:100%;font-size:14px;line-height:1.4;border:1px solid ${fieldLine};background:${field};color:inherit;border-radius:12px;transition:border-color .15s ease,box-shadow .15s ease}
+.ta{flex:1;resize:none;height:42px;max-height:120px;padding:10px 12px}
+.ta:focus,.in:focus{outline:none;border-color:${accent};box-shadow:${ring}}
+.ta::placeholder,.in::placeholder{color:${muted};opacity:1}
+.send{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;flex:none;border:0;border-radius:12px;cursor:pointer;background:${accent};color:${ink};transition:opacity .15s ease}
+.send svg{width:19px;height:19px;${rtl ? "transform:scaleX(-1)" : ""}}
+.send:disabled{opacity:.5;cursor:default}
+.pre{display:flex;flex-direction:column;gap:10px;padding:16px;margin:4px 0 6px;border:1px solid ${line};border-radius:16px;background:${bg}}
+.pre[hidden]{display:none}
+.intro{font-size:13px;line-height:1.5;color:${muted};margin:0}
+.fld{display:flex;flex-direction:column;gap:5px}
+.fld label{font-size:12.5px;font-weight:600}
+.fld .req{color:${danger}}
+.in{height:42px;padding:0 12px}
+.in[aria-invalid=true],.ta[aria-invalid=true]{border-color:${danger}}
+.pre .ta{height:64px;flex:none}
+.hint{font-size:11.5px;color:${muted}}
+.ferr{font-size:12px;color:${danger}}
+.ferr:empty{display:none}
+.go{height:44px;border:0;border-radius:12px;cursor:pointer;font-size:14.5px;font-weight:700;background:${accent};color:${ink}}
+.go:disabled{opacity:.6;cursor:default}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media (max-width:480px){
+.wrap{bottom:16px;${side}:16px}
+.panel{position:fixed;inset:0;width:100%;max-width:none;height:100%;max-height:none;border-radius:0;border:0;transform:translateY(24px)}
+.wrap.is-open .btn{display:none}
+.ta,.in{font-size:16px}
+}
+@media (prefers-reduced-motion:reduce){.panel,.btn,.chip{transition:none}.typing i{animation:none;opacity:.7}}
 `
 }
 
-const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>`
+const ICON_CHAT = `<svg class="ic-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>`
+const ICON_X = `<svg class="ic-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>`
+const ICON_SEND = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>`
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string)
 }
+
+/** Up to two letters for the header when the business has no picture. */
+function initials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean)
+  const first = (w: string | undefined) => (w ? Array.from(w)[0] ?? "" : "")
+  return (first(words[0]) + (words.length > 1 ? first(words[words.length - 1]) : "")).toUpperCase() || "?"
+}
+
+let seq = 0
 
 declare global {
   interface Window {
@@ -190,9 +301,10 @@ declare global {
 
 export function mount(options: WidgetOptions): ChatWidget {
   const locale: Locale = options.locale === "ar" ? "ar" : "en"
-  const t = STRINGS[locale]
+  const t: Strings = STRINGS[locale]
   const rtl = locale === "ar"
   const preferServer = options.prefer === "server"
+  const id = `mc${++seq}`
 
   const client = createChat(options)
 
@@ -202,37 +314,69 @@ export function mount(options: WidgetOptions): ChatWidget {
   ;(options.target ?? document.body).appendChild(host)
 
   const showLauncher = options.launcher !== false
+  const field = (name: string, label: string, type: string, extra: string, hint = "") => `
+      <div class="fld"><label for="${id}-${name}">${esc(label)}</label>
+        <input class="in" id="${id}-${name}" name="${name}" type="${type}" ${extra} aria-describedby="${id}-${name}-e${hint ? ` ${id}-${name}-h` : ""}">
+        ${hint ? `<span class="hint" id="${id}-${name}-h">${esc(hint)}</span>` : ""}
+        <span class="ferr" id="${id}-${name}-e" aria-live="polite"></span></div>`
   root.innerHTML = `
 <style></style>
 <div class="wrap">
-  <div class="panel" role="dialog">
-    <div class="head">
-      <span class="dot" hidden></span>
-      <div class="who-box"><span class="ttl"></span><span class="sub"></span></div>
-      <button class="x" type="button" aria-label="${esc(t.close)}">×</button>
+  <section class="panel" role="dialog" aria-labelledby="${id}-t" aria-describedby="${id}-s" hidden>
+    <header class="head">
+      <div class="av" aria-hidden="true"><img alt="" hidden><span class="ini"></span><span class="dot" hidden></span></div>
+      <div class="who-box"><h2 class="ttl" id="${id}-t"></h2><span class="sub" id="${id}-s"></span></div>
+      <button class="x" type="button" aria-label="${esc(t.close)}">${ICON_X.replace(' class="ic-x"', "")}</button>
+    </header>
+    <div class="body">
+      <form class="pre" novalidate hidden>
+        <p class="intro">${esc(t.formIntro)}</p>
+        ${field("name", t.name, "text", 'autocomplete="name" maxlength="120" dir="auto" required aria-required="true"')}
+        <span class="hint">${esc(t.or)}</span>
+        ${field("email", t.email, "email", 'autocomplete="email" inputmode="email" maxlength="254" dir="ltr"')}
+        ${field("phone", t.phone, "tel", 'autocomplete="tel" inputmode="tel" maxlength="40" dir="ltr"', t.phoneHint)}
+        <div class="fld"><label for="${id}-message">${esc(t.message)}</label>
+          <textarea class="ta" id="${id}-message" name="message" dir="auto" maxlength="8000" aria-describedby="${id}-message-e"></textarea>
+          <span class="ferr" id="${id}-message-e" aria-live="polite"></span></div>
+        <button class="go" type="submit">${esc(t.start)}</button>
+      </form>
+      <div class="log" role="log" aria-live="polite" aria-relevant="additions"></div>
+      <div class="typing" role="status" hidden><span class="sr"></span><i></i><i></i><i></i></div>
     </div>
-    <div class="log" aria-live="polite"></div>
     <div class="qa" role="group" aria-label="${esc(t.suggestions)}" hidden></div>
-    <div class="err" hidden></div>
-    <form class="form"><textarea class="ta" rows="1" dir="auto" placeholder="${esc(t.placeholder)}" aria-label="${esc(t.placeholder)}"></textarea><button class="send" type="submit">${esc(t.send)}</button></form>
-  </div>
-  ${showLauncher ? `<button class="btn" type="button">${ICON}<span>${esc(t.launcher)}</span><span class="badge" hidden></span></button>` : ""}
+    <div class="err" role="alert" hidden></div>
+    <form class="form"><textarea class="ta" rows="1" dir="auto" placeholder="${esc(t.placeholder)}" aria-label="${esc(t.placeholder)}"></textarea><button class="send" type="submit" aria-label="${esc(t.send)}">${ICON_SEND}</button></form>
+  </section>
+  ${showLauncher ? `<button class="btn" type="button" aria-expanded="false">${ICON_CHAT}${ICON_X}<span class="lbl">${esc(t.launcher)}</span><span class="badge" hidden></span></button>` : ""}
 </div>`
 
-  const style = root.querySelector("style") as HTMLStyleElement
-  const panel = root.querySelector(".panel") as HTMLElement
-  const titleEl = root.querySelector(".ttl") as HTMLElement
-  const subEl = root.querySelector(".sub") as HTMLElement
-  const dot = root.querySelector(".dot") as HTMLElement
-  const log = root.querySelector(".log") as HTMLElement
-  const qa = root.querySelector(".qa") as HTMLElement
-  const errBox = root.querySelector(".err") as HTMLElement
-  const form = root.querySelector(".form") as HTMLFormElement
-  const ta = root.querySelector(".ta") as HTMLTextAreaElement
-  const sendBtn = root.querySelector(".send") as HTMLButtonElement
+  const $ = <T extends Element>(sel: string) => root.querySelector(sel) as T
+  const style = $<HTMLStyleElement>("style")
+  const wrap = $<HTMLElement>(".wrap")
+  const panel = $<HTMLElement>(".panel")
+  const titleEl = $<HTMLElement>(".ttl")
+  const subEl = $<HTMLElement>(".sub")
+  const avImg = $<HTMLImageElement>(".av img")
+  const avIni = $<HTMLElement>(".av .ini")
+  const dot = $<HTMLElement>(".dot")
+  const body = $<HTMLElement>(".body")
+  const log = $<HTMLElement>(".log")
+  const typingEl = $<HTMLElement>(".typing")
+  const qa = $<HTMLElement>(".qa")
+  const errBox = $<HTMLElement>(".err")
+  const form = $<HTMLFormElement>(".form")
+  const ta = $<HTMLTextAreaElement>(".form .ta")
+  const sendBtn = $<HTMLButtonElement>(".send")
+  const pre = $<HTMLFormElement>(".pre")
+  const preBtn = $<HTMLButtonElement>(".go")
   const launcher = root.querySelector(".btn") as HTMLButtonElement | null
   const badge = root.querySelector(".badge") as HTMLElement | null
-  const closeBtn = root.querySelector(".x") as HTMLButtonElement
+  const closeBtn = $<HTMLButtonElement>(".x")
+  const input = (n: string) => pre.querySelector(`[name=${n}]`) as HTMLInputElement | HTMLTextAreaElement
+  avImg.addEventListener("error", () => {
+    avImg.hidden = true
+    avIni.hidden = false
+  })
 
   // ---- what the widget looks like: options, then the config -----------------
 
@@ -246,11 +390,16 @@ export function mount(options: WidgetOptions): ChatWidget {
     const serverTheme = cfg && cfg.theme !== "auto" ? cfg.theme : cfg ? "auto" : undefined
     const theme = pick<string>(options.theme, serverTheme, "auto")
     const accentRaw = pick<string>(options.accent, cfg?.accent, DEFAULT_ACCENT)
+    const title = rtl
+      ? pick(options.titleAr, cfg?.title_ar, "") || pick(options.title, cfg?.title, t.title)
+      : pick(options.title, cfg?.title, t.title)
     return {
       accent: ACCENT.test(accentRaw) ? accentRaw : DEFAULT_ACCENT,
       theme,
       position: pick<string>(options.position, cfg?.position, "end"),
-      title: rtl ? pick(options.titleAr, cfg?.title_ar, "") || pick(options.title, cfg?.title, t.title) : pick(options.title, cfg?.title, t.title),
+      title,
+      // Who the visitor talks to: the business, else the panel's title.
+      name: cfg?.name || title,
       greeting: rtl
         ? pick(options.greetingAr, cfg?.greeting_ar, "") || pick(options.greeting, cfg?.greeting, "")
         : pick(options.greeting, cfg?.greeting, ""),
@@ -261,13 +410,19 @@ export function mount(options: WidgetOptions): ChatWidget {
   let current = settings(null)
 
   function paint() {
-    current = settings(client.config())
+    const cfg = client.config()
+    current = settings(cfg)
     const dark = current.theme === "dark" || (current.theme !== "light" && !!media?.matches)
     style.textContent = css(current.accent, dark, rtl, current.position === "start")
-    titleEl.textContent = current.title
+    titleEl.textContent = current.name
     panel.setAttribute("aria-label", current.title)
+    avIni.textContent = initials(current.name)
+    const pic = cfg?.avatar_url ?? ""
+    if (pic && avImg.getAttribute("src") !== pic) avImg.src = pic
+    avImg.hidden = !pic
+    avIni.hidden = !!pic
     paintPresence(client.presence())
-    render(client.messages())
+    render(client.messages(), true)
   }
   media?.addEventListener?.("change", paint)
 
@@ -279,10 +434,14 @@ export function mount(options: WidgetOptions): ChatWidget {
   }
 
   // The header's second line: "typing…" wins over the plain online/away/offline
-  // word while it is true, same slot fadymondy.com uses for presence.
+  // word while it is true; the thread shows the same as a bubble of dots.
   function paintSub() {
     const p = client.presence()
-    subEl.textContent = client.isAgentTyping() ? t.typingNow : p === "online" ? t.online : p === "away" ? t.away : t.offline
+    const typing = client.isAgentTyping()
+    subEl.textContent = typing ? t.typingNow : p === "online" ? t.online : p === "away" ? t.away : t.offline
+    typingEl.hidden = !typing || showingForm()
+    ;(typingEl.firstChild as HTMLElement).textContent = `${current.name} ${t.typing}`
+    if (typing) stick()
   }
 
   function paintBadge(n: number) {
@@ -290,49 +449,140 @@ export function mount(options: WidgetOptions): ChatWidget {
     const show = n > 0 && !isOpen()
     badge.hidden = !show
     badge.textContent = n > 9 ? "9+" : String(n)
-    launcher?.setAttribute("aria-label", show ? `${t.launcher} (${n} ${t.unread})` : t.launcher)
+    launcher?.setAttribute("aria-label", show ? `${t.launcher} (${n} ${t.unread})` : isOpen() ? t.close : t.launcher)
+  }
+
+  // ---- time -------------------------------------------------------------------
+
+  const tag = rtl ? "ar-EG" : "en"
+  const fmt = (o: Intl.DateTimeFormatOptions) => {
+    try {
+      return new Intl.DateTimeFormat(tag, o)
+    } catch {
+      return new Intl.DateTimeFormat(undefined, o)
+    }
+  }
+  const timeFmt = fmt({ hour: "numeric", minute: "2-digit" })
+  const dayFmt = fmt({ weekday: "short", day: "numeric", month: "short" })
+  const fullFmt = fmt({ dateStyle: "medium", timeStyle: "short" })
+  const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+  function dayLabel(d: Date): string {
+    const now = new Date()
+    if (dayKey(d) === dayKey(now)) return t.today
+    const y = new Date(now)
+    y.setDate(now.getDate() - 1)
+    return dayKey(d) === dayKey(y) ? t.yesterday : dayFmt.format(d)
   }
 
   // ---- the thread ---------------------------------------------------------------
+  //
+  // Appended, not redrawn, while the thread only grows: a screen reader
+  // announces each new message once instead of reading the whole log again.
 
   let sending = false
+  let rendered: string[] = []
+  let lastDay = ""
+  let lastSide = ""
+  let lastAt = 0
+  let shownClosed = false
+  let formForced = false
 
-  function render(messages: ChatMessage[]) {
-    log.textContent = ""
+  const showingForm = () => (formForced || client.needsContact()) && client.messages().length === 0
+
+  function stick() {
+    body.scrollTop = body.scrollHeight
+  }
+
+  function row(m: ChatMessage) {
+    const mine = m.direction === "in" // `in` is inbound to the workspace: this visitor
+    const side = mine ? "mine" : "theirs"
+    const at = new Date(m.created_at)
+    const valid = !isNaN(at.getTime())
+    if (valid && dayKey(at) !== lastDay) {
+      lastDay = dayKey(at)
+      lastSide = ""
+      const d = document.createElement("div")
+      d.className = "day"
+      d.textContent = dayLabel(at)
+      log.appendChild(d)
+    }
+    // Consecutive messages from one side within a few minutes read as a group.
+    const cont = side === lastSide && valid && at.getTime() - lastAt < 5 * 60_000
+    const r = document.createElement("div")
+    r.className = `row ${side}${cont ? " cont" : ""}`
+    if (!cont && !mine) {
+      const who = document.createElement("div")
+      who.className = "who"
+      who.textContent = current.name || t.them
+      r.appendChild(who)
+    }
+    const bubble = document.createElement("div")
+    bubble.className = "msg"
+    bubble.setAttribute("dir", "auto")
+    bubble.textContent = m.body
+    if (!cont && mine) bubble.setAttribute("aria-label", `${t.you}: ${m.body}`)
+    r.appendChild(bubble)
+    if (valid) {
+      const ts = document.createElement("time")
+      ts.className = "ts"
+      ts.dateTime = m.created_at
+      ts.title = fullFmt.format(at)
+      ts.textContent = timeFmt.format(at)
+      r.appendChild(ts)
+      // Only the last of a run keeps its time; the run shares it.
+      const prev = log.lastElementChild
+      if (cont && prev?.classList.contains("row")) prev.querySelector(".ts")?.setAttribute("hidden", "")
+    }
+    lastSide = side
+    lastAt = valid ? at.getTime() : lastAt
+    log.appendChild(r)
+  }
+
+  function render(messages: ChatMessage[], full = false) {
+    const formOn = showingForm()
+    pre.hidden = !formOn
+    form.hidden = formOn
+    const closed = client.status() === "closed"
+    const ids = messages.map((m) => m.id || `${m.created_at}|${m.body}`)
+    const grows = !full && closed === shownClosed && rendered.length > 0 && rendered.every((k, i) => ids[i] === k)
+    const nearEnd = body.scrollHeight - body.scrollTop - body.clientHeight < 80
+    if (!grows) {
+      log.textContent = ""
+      lastDay = lastSide = ""
+      lastAt = 0
+      rendered = []
+    }
     if (messages.length === 0) {
-      const g = document.createElement("div")
-      g.className = current.greeting ? "greet" : "note"
-      g.setAttribute("dir", "auto")
-      g.textContent = current.greeting || t.empty
-      log.appendChild(g)
-    } else {
-      for (const m of messages) {
-        const row = document.createElement("div")
-        // `in` is inbound from the workspace's side, i.e. what this visitor sent.
-        row.className = `row ${m.direction === "in" ? "mine" : "theirs"}`
-        const who = document.createElement("div")
-        who.className = "who"
-        who.textContent = m.direction === "in" ? t.you : t.them
-        const bubble = document.createElement("div")
-        bubble.className = "msg"
-        bubble.setAttribute("dir", "auto")
-        bubble.textContent = m.body
-        row.append(who, bubble)
-        log.appendChild(row)
+      if (!formOn || current.greeting) {
+        const g = document.createElement("div")
+        g.className = current.greeting ? "greet" : "note"
+        g.setAttribute("dir", "auto")
+        g.textContent = current.greeting || t.empty
+        log.appendChild(g)
       }
-      if (client.status() === "closed") {
+      // The form goes under the greeting.
+      if (formOn) log.after(pre)
+    } else {
+      for (const m of messages.slice(rendered.length)) row(m)
+      if (closed && (!grows || !shownClosed)) {
         const n = document.createElement("div")
         n.className = "note"
         n.textContent = t.closedNote
         log.appendChild(n)
       }
     }
+    if (!formOn) body.appendChild(typingEl)
+    rendered = ids
+    shownClosed = closed
     renderActions(messages.length === 0)
-    log.scrollTop = log.scrollHeight
+    paintSub()
+    if (formOn) body.scrollTop = 0
+    else if (!grows || nearEnd) stick()
   }
 
   // Openers while there is nothing to read; gone once the conversation starts
-  // (a way in, not a permanent menu). Picking one sends it.
+  // (a way in, not a permanent menu). Picking one sends it — or, while the
+  // form is up, writes it into the form's message.
   function renderActions(empty: boolean) {
     const list: QuickAction[] =
       empty && typeof location !== "undefined" ? quickActionsFor(client.config(), location.pathname, locale) : []
@@ -345,43 +595,109 @@ export function mount(options: WidgetOptions): ChatWidget {
       b.setAttribute("dir", "auto")
       b.textContent = a.label
       b.disabled = sending
-      b.addEventListener("click", () => void submit(a.message))
+      b.addEventListener("click", () => {
+        if (showingForm()) {
+          const msg = input("message")
+          msg.value = a.message
+          ;(input("name").value ? msg : input("name")).focus()
+        } else void submit(a.message)
+      })
       qa.appendChild(b)
     }
   }
 
+  function busy(on: boolean) {
+    sending = on
+    sendBtn.disabled = on
+    preBtn.disabled = on
+    preBtn.textContent = on ? t.sending : t.start
+    sendBtn.setAttribute("aria-label", on ? t.sending : t.send)
+    for (const b of Array.from(qa.querySelectorAll("button"))) (b as HTMLButtonElement).disabled = on
+  }
+
   // ---- outgoing typing (MH-668) -----------------------------------------------------
   //
-  // Mirrors the header's own presence, in reverse. `client.setComposing` owns
-  // the throttle (at most one `composing` every ~3s of continuous typing) and
-  // the ~4s idle timeout on its own, so the widget only has to say what just
-  // happened: `true` on every keystroke, `false` the moment the box blurs or
-  // the message is sent — whichever comes first.
+  // `client.setComposing` owns the throttle and the idle timeout; the widget
+  // only says what just happened: `true` on every keystroke, `false` the
+  // moment the box blurs or the message is sent.
 
-  async function submit(text: string) {
+  async function submit(text: string): Promise<boolean> {
     text = text.trim()
-    if (!text || sending) return
+    if (!text || sending) return false
     client.setComposing(false) // the message itself is the "I stopped typing" signal
     errBox.hidden = true
-    sending = true
-    sendBtn.disabled = true
-    sendBtn.textContent = t.sending
+    busy(true)
     renderActions(false)
     try {
       await client.send(text)
       if (ta.value.trim() === text) {
         ta.value = ""
-        ta.style.height = "38px"
+        ta.style.height = ""
       }
-    } catch {
-      /* the error event already surfaced it; the typed text is kept */
-      render(client.messages())
+      formForced = false
+      return true
+    } catch (e) {
+      // The error event already surfaced it; the typed text is kept. A server
+      // that wants contact details the widget did not know about shows the form.
+      if ((e as { kind?: string })?.kind === "contact_required") {
+        formForced = true
+        if (!showingForm()) return false
+        const msg = input("message")
+        if (!msg.value) msg.value = text
+      }
+      render(client.messages(), true)
+      return false
     } finally {
-      sending = false
-      sendBtn.disabled = false
-      sendBtn.textContent = t.send
+      busy(false)
     }
   }
+
+  // ---- the pre-chat form ------------------------------------------------------------
+
+  function setFieldError(name: string, message: string) {
+    const el = input(name)
+    el.setAttribute("aria-invalid", message ? "true" : "false")
+    ;(root.getElementById(`${id}-${name}-e`) as HTMLElement).textContent = message
+  }
+
+  function prefill() {
+    const v = client.visitor()
+    for (const k of ["name", "email", "phone"] as const) {
+      const el = input(k)
+      if (!el.value && v[k]) el.value = v[k] as string
+    }
+  }
+
+  pre.addEventListener("submit", async (e) => {
+    e.preventDefault()
+    if (sending) return
+    errBox.hidden = true
+    const v = { name: input("name").value, email: input("email").value, phone: input("phone").value }
+    const message = input("message").value.trim()
+    const problem = checkVisitor(v)
+    for (const k of ["name", "email", "phone", "message"]) setFieldError(k, "")
+    let first = ""
+    if (problem === "name") setFieldError((first = "name"), t.errName)
+    else if (problem === "email") setFieldError((first = "email"), t.errEmail)
+    else if (problem === "phone") setFieldError((first = "phone"), t.errPhone)
+    else if (problem === "contact") {
+      setFieldError((first = "email"), t.errContact)
+      setFieldError("phone", " ")
+    }
+    if (!message) {
+      setFieldError("message", t.errMessage)
+      first ||= "message"
+    }
+    if (first) {
+      input(first).focus()
+      return
+    }
+    client.setVisitor(v)
+    if (await submit(message)) {
+      input("message").value = ""
+      ta.focus()
+    }
+  })
 
   // ---- events from the client -----------------------------------------------------
 
@@ -399,6 +715,7 @@ export function mount(options: WidgetOptions): ChatWidget {
       if (n > 0 && isOpen()) void client.markRead()
     }),
     client.on("error", (e) => {
+      if (e.kind === "contact_required") return // said by the form itself
       errBox.textContent = e.message
       errBox.hidden = false
     }),
@@ -424,6 +741,8 @@ export function mount(options: WidgetOptions): ChatWidget {
   const inviteKey = `${options.storagePrefix ?? "moharrik.chat"}.invited.${options.key}`
   let inviteTimer: ReturnType<typeof setTimeout> | null = null
   let presenceTimer: ReturnType<typeof setInterval> | null = null
+  let hideTimer: ReturnType<typeof setTimeout> | null = null
+  let returnFocus: HTMLElement | null = null
 
   function markInvited() {
     try {
@@ -436,28 +755,54 @@ export function mount(options: WidgetOptions): ChatWidget {
   }
 
   function isOpen() {
-    return panel.classList.contains("open")
+    return !panel.hidden && panel.classList.contains("open")
   }
 
-  function open() {
+  function open(fromInvite = false) {
     // A visitor who opens it themselves has had their invitation.
     markInvited()
+    if (hideTimer) clearTimeout(hideTimer)
+    hideTimer = null
+    const active = document.activeElement as HTMLElement | null
+    returnFocus = active && active !== document.body && active !== host ? active : launcher
+    panel.hidden = false
+    void panel.offsetWidth // start the transition from the closed state
     panel.classList.add("open")
+    wrap.classList.add("is-open")
+    launcher?.classList.add("on")
+    launcher?.setAttribute("aria-expanded", "true")
     paintBadge(client.unread())
-    render(client.messages())
+    prefill()
+    render(client.messages(), true)
     client.start()
     void client.markRead()
     // Presence is a header detail: re-read while the panel is open, not from
     // every page view (fadymondy.com's PRESENCE_INTERVAL).
     if (!presenceTimer) presenceTimer = setInterval(() => void client.loadConfig(), 60_000)
-    ta.focus()
+    // An invitation does not steal the visitor's focus (or the keyboard on a phone).
+    // The form starts at its top (the greeting and why we ask), not scrolled to the field.
+    if (!fromInvite) (showingForm() ? input(input("name").value ? "message" : "name") : ta).focus({ preventScroll: true })
   }
   function close() {
+    if (panel.hidden) return
+    const hadFocus = root.activeElement != null
     panel.classList.remove("open")
+    wrap.classList.remove("is-open")
+    launcher?.classList.remove("on")
+    launcher?.setAttribute("aria-expanded", "false")
+    const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches
+    hideTimer = setTimeout(
+      () => {
+        hideTimer = null
+        if (!panel.classList.contains("open")) panel.hidden = true
+      },
+      reduced ? 0 : 220,
+    )
     client.stop()
     if (presenceTimer) clearInterval(presenceTimer)
     presenceTimer = null
     paintBadge(client.unread())
+    if (hadFocus) (returnFocus?.isConnected ? returnFocus : launcher)?.focus()
   }
   function toggle() {
     isOpen() ? close() : open()
@@ -484,20 +829,26 @@ export function mount(options: WidgetOptions): ChatWidget {
       } catch {
         /* ignore */
       }
-      open()
+      open(true)
     }, cfg.invite_after_seconds * 1000)
   }
 
   launcher?.addEventListener("click", toggle)
   closeBtn.addEventListener("click", close)
+  panel.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.stopPropagation()
+      close()
+    }
+  })
   ta.addEventListener("input", () => {
-    ta.style.height = "38px"
-    ta.style.height = `${Math.min(ta.scrollHeight, 110)}px`
+    ta.style.height = ""
+    ta.style.height = `${Math.min(ta.scrollHeight + 2, 120)}px`
     client.setComposing(!!ta.value.trim()) // cleared back to empty counts as stopped
   })
   ta.addEventListener("blur", () => client.setComposing(false))
   ta.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault()
       form.requestSubmit()
     }
@@ -520,7 +871,7 @@ export function mount(options: WidgetOptions): ChatWidget {
 
   return {
     ...client,
-    open,
+    open: () => open(),
     close,
     toggle,
     isOpen,
@@ -529,6 +880,7 @@ export function mount(options: WidgetOptions): ChatWidget {
       media?.removeEventListener?.("change", paint)
       if (inviteTimer) clearTimeout(inviteTimer)
       if (presenceTimer) clearInterval(presenceTimer)
+      if (hideTimer) clearTimeout(hideTimer)
       client.destroy() // stops polling/streaming and its own composing-idle timer
       host.remove()
     },

@@ -60,9 +60,31 @@ export type ChatConfig = {
   quick_actions: QuickAction[]
   lead_event: boolean
   presence: Presence
+  /** Ask for a name and an email or phone before the first message (the pre-chat form). */
+  require_contact: boolean
+  /** The business the visitor is talking to. Empty on an older server. */
+  name: string
+  /** The business's picture, absolute. Empty when it has none. */
+  avatar_url: string
 }
 
-export type ChatErrorKind = "blocked" | "unknown" | "network" | "too_long" | "server" | "slow_down"
+/** Who the visitor is, as the pre-chat form (or your own UI) collected it. */
+export type Visitor = {
+  name?: string
+  email?: string
+  /** With its country code, e.g. `+20 100 123 4567`. */
+  phone?: string
+}
+
+export type ChatErrorKind =
+  | "blocked"
+  | "unknown"
+  | "network"
+  | "too_long"
+  | "server"
+  | "slow_down"
+  /** The widget asks for a name and an email or phone first (see `needsContact`). */
+  | "contact_required"
 
 export class ChatError extends Error {
   constructor(
@@ -94,8 +116,12 @@ export type ChatOptions = {
   persist?: boolean
   /** Storage key prefix, when one page hosts more than one widget (default `moharrik.chat`). */
   storagePrefix?: string
-  /** Optional visitor details attached when the conversation is created. */
-  visitor?: { name?: string; email?: string }
+  /**
+   * Visitor details attached when the conversation is created. A widget with
+   * the pre-chat form on needs a name and an email or phone; details set
+   * with `setVisitor` are remembered on this browser and win over these.
+   */
+  visitor?: Visitor
   fetchImpl?: typeof fetch
   /** EventSource constructor; defaults to the browser's. Pass `null` to never stream. */
   eventSourceImpl?: typeof EventSource | null
@@ -159,6 +185,16 @@ export type ChatClient = {
   visitorToken(): string | null
   /** Forget the conversation on this browser; the next send starts a new one. */
   reset(): void
+  /** The visitor's details: what `setVisitor` remembered, else `options.visitor`. */
+  visitor(): Visitor
+  /** Set (and, with `persist`, remember on this browser) who the visitor is. */
+  setVisitor(visitor: Visitor): void
+  /**
+   * Whether the next `send` would be refused for missing contact details: the
+   * widget asks for them, no conversation exists yet, and no name plus email
+   * or phone is known. Show your form when this is true.
+   */
+  needsContact(): boolean
   on<E extends keyof ChatEvents>(event: E, handler: ChatEvents[E]): () => void
   destroy(): void
 }
@@ -199,7 +235,34 @@ function writeStorage(k: string, v: string | null) {
   }
 }
 
-function errorFor(status: number, retryAfter?: string | null): ChatError {
+/**
+ * Contact details the server would accept: a name, and a plausible email or a
+ * phone with its country code. The server has the last word; this only spares
+ * a round trip, and tells a form what to say.
+ */
+export function checkVisitor(v: Visitor | null | undefined): "name" | "email" | "phone" | "contact" | null {
+  const name = (v?.name ?? "").trim()
+  const email = (v?.email ?? "").trim()
+  const phone = toAsciiDigits((v?.phone ?? "").trim())
+  if (!name) return "name"
+  if (email && !/^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]{2,}$/.test(email)) return "email"
+  if (phone) {
+    const digits = phone.replace(/\D/g, "").replace(/^00/, "")
+    if (!/^(\+|00)/.test(phone) || digits.length < 8 || digits.length > 15) return "phone"
+  }
+  if (!email && !phone) return "contact"
+  return null
+}
+
+function toAsciiDigits(s: string): string {
+  return s.replace(/[٠-٩۰-۹]/g, (d) => String((d.charCodeAt(0) & 0xf) % 10))
+}
+
+function errorFor(status: number, retryAfter?: string | null, detail?: string): ChatError {
+  if (status === 422 && detail?.startsWith("contact_required")) {
+    const why = detail.replace(/^contact_required:\s*/, "")
+    return new ChatError("contact_required", why ? why.charAt(0).toUpperCase() + why.slice(1) + "." : "Tell us who you are first.", status)
+  }
   if (status === 403) return new ChatError("blocked", "This chat is not available on this site.", status)
   if (status === 404) return new ChatError("unknown", "This chat is not set up.", status)
   if (status === 400) return new ChatError("too_long", "That message is too long.", status)
@@ -239,6 +302,11 @@ function cleanConfig(raw: Partial<ChatConfig>): ChatConfig {
       })),
     lead_event: raw.lead_event !== false,
     presence: raw.presence === "online" || raw.presence === "away" ? raw.presence : "offline",
+    // Absent on a server older than the form: it never asks.
+    require_contact: raw.require_contact === true,
+    name: str(raw.name, 80),
+    // It ends up in an <img src>: an http(s) address or nothing.
+    avatar_url: typeof raw.avatar_url === "string" && /^https?:\/\//i.test(raw.avatar_url) ? raw.avatar_url : "",
   }
 }
 
@@ -278,6 +346,20 @@ export function createChat(options: ChatOptions): ChatClient {
   const base = `${root}/messages`
 
   let visitorToken: string | null = persist ? readStorage(storeKey) : null
+  const visitorKey = `${storeKey}.visitor`
+  let visitor: Visitor = { ...(options.visitor ?? {}) }
+  if (persist) {
+    try {
+      const saved = JSON.parse(readStorage(visitorKey) ?? "null") as Visitor | null
+      if (saved && typeof saved === "object") {
+        for (const k of ["name", "email", "phone"] as const) {
+          if (typeof saved[k] === "string" && saved[k]) visitor[k] = saved[k]
+        }
+      }
+    } catch {
+      /* a corrupt entry: ask again */
+    }
+  }
   let messages: ChatMessage[] = []
   let status: ChatStatus | null = null
   let config: ChatConfig | null = null
@@ -432,8 +514,9 @@ export function createChat(options: ChatOptions): ChatClient {
     const payload: Record<string, unknown> = { body: text }
     if (visitorToken) payload.visitor_token = visitorToken
     else {
-      if (options.visitor?.name) payload.name = options.visitor.name
-      if (options.visitor?.email) payload.email = options.visitor.email
+      if (visitor.name) payload.name = visitor.name
+      if (visitor.email) payload.email = visitor.email
+      if (visitor.phone) payload.phone = visitor.phone
       // Where the conversation started, for whoever answers it.
       if (typeof location !== "undefined") payload.page_url = location.href
       if (options.locale) payload.locale = options.locale
@@ -449,7 +532,17 @@ export function createChat(options: ChatOptions): ChatClient {
     } catch {
       throw fail(new ChatError("network", "Could not reach the chat server."))
     }
-    if (!res.ok) throw fail(errorFor(res.status, res.headers?.get?.("Retry-After")))
+    if (!res.ok) {
+      let detail = ""
+      if (res.status === 422) {
+        try {
+          detail = String(((await res.json()) as { detail?: string }).detail ?? "")
+        } catch {
+          /* not JSON */
+        }
+      }
+      throw fail(errorFor(res.status, res.headers?.get?.("Retry-After"), detail))
+    }
 
     const data = (await res.json()) as { visitor_token?: string }
     if (data.visitor_token && data.visitor_token !== visitorToken) {
@@ -619,6 +712,17 @@ export function createChat(options: ChatOptions): ChatClient {
     isLive: () => live,
     visitorToken: () => visitorToken,
     reset,
+    visitor: () => ({ ...visitor }),
+    setVisitor(v: Visitor) {
+      const next: Visitor = {}
+      for (const k of ["name", "email", "phone"] as const) {
+        const val = typeof v?.[k] === "string" ? (v[k] as string).trim().slice(0, k === "name" ? 120 : 254) : ""
+        if (val) next[k] = val
+      }
+      visitor = next
+      if (persist) writeStorage(visitorKey, JSON.stringify(next))
+    },
+    needsContact: () => !!config?.require_contact && !visitorToken && checkVisitor(visitor) !== null,
     on(event, handler) {
       handlers[event].add(handler as never)
       return () => {

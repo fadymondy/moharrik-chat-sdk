@@ -1,6 +1,6 @@
 {
   "name": "moharrik-chat",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The Moharrik chat widget and headless chat client — works in plain JS, React, Vue, Svelte, Angular or anything else.",
   "keywords": [
     "moharrik",
@@ -57,6 +57,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node test/core.test.mjs",
+    "e2e": "node test/widget.e2e.mjs",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
@@ -74,6 +75,7 @@
   "devDependencies": {
     "@types/react": "^19.0.0",
     "esbuild": "^0.24.0",
+    "puppeteer-core": "^24.43.1",
     "react": "^19.0.0",
     "typescript": "^5.7.2",
     "vue": "^3.5.13"

@@ -53,7 +53,7 @@ function boot() {
     // Moharrik win once they arrive, so an old snippet stays current.
     prefer: "server",
     launcher: el.getAttribute("data-launcher") !== "false",
-    visitor: { name: attr("data-visitor-name"), email: attr("data-visitor-email") },
+    visitor: { name: attr("data-visitor-name"), email: attr("data-visitor-email"), phone: attr("data-visitor-phone") },
   })
 
   window.MoharrikChat = Object.assign(widget, { mount, createChat })
