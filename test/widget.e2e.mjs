@@ -44,6 +44,8 @@ if (!CHROME) {
 const state = {
   requireContact: true,
   configRequires: true,
+  configDelayMs: 0,
+  reject: "", // a 422 detail for the next first send
   posts: [],
   threads: new Map(), // token -> messages
   streams: new Map(), // token -> [res]
@@ -88,6 +90,11 @@ const server = http.createServer((req, res) => {
   const m = p.match(/^\/api\/chat\/([^/]+)\/(config|messages|read|typing|events)$/)
   if (!m || m[1] !== KEY) return json(res, 404, { detail: "not found" })
   const what = m[2]
+  if (what === "config" && state.configDelayMs) {
+    const ms = state.configDelayMs
+    state.configDelayMs = 0
+    return setTimeout(() => server.emit("request", req, res), ms)
+  }
   if (what === "config")
     return json(res, 200, {
       greeting: "Hi! 👋 Ask me anything about a project — I usually reply within the hour.",
@@ -133,6 +140,11 @@ const server = http.createServer((req, res) => {
     if (what !== "messages") return json(res, 200, { ok: true })
     state.posts.push(body)
     let token = body.visitor_token
+    if (!token && state.reject) {
+      const detail = state.reject
+      state.reject = ""
+      return json(res, 422, { title: "Unprocessable Entity", status: 422, detail })
+    }
     if (!token) {
       if (state.requireContact && (!body.name || !(body.email || body.phone)))
         return json(res, 422, { title: "Unprocessable Entity", status: 422, detail: "contact_required: an email or a phone number is required" })
@@ -163,7 +175,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const browser = await puppeteer.launch({
   executablePath: CHROME,
   headless: true,
-  args: ["--no-first-run", "--no-default-browser-check", "--font-render-hinting=none", "--lang=en-US"],
+  args: ["--no-first-run", "--no-default-browser-check", "--font-render-hinting=none", "--lang=en-US", ...(process.env.CI ? ["--no-sandbox"] : [])],
 })
 
 const DESKTOP = { width: 1280, height: 820, deviceScaleFactor: 1 }
@@ -396,6 +408,69 @@ try {
       await pg.waitForFunction(() => !document.querySelector("[data-moharrik-chat]").shadowRoot.querySelector(".pre").hidden)
       assert.equal(await inWidget(pg, (r) => r.querySelector(".pre .ta").value), "hello?", "the typed message moves into the form")
       state.configRequires = true
+      await ctx.close()
+    })
+
+    const fillForm = async (pg) => {
+      await pg.evaluate(() => window.MoharrikChat.open())
+      await pg.waitForFunction(() => !document.querySelector("[data-moharrik-chat]").shadowRoot.querySelector(".pre").hidden)
+      await type(pg, "[name=name]", "Liam")
+      await type(pg, "[name=email]", "o'connor@example.test")
+      await type(pg, ".pre .ta", "Still there?")
+    }
+
+    await step("an address the server refuses is shown on the email field, nothing lost", async () => {
+      const { ctx, pg } = await fresh(DESKTOP, "en")
+      await fillForm(pg)
+      state.reject = "contact_required: that email address is not valid"
+      await click(pg, ".go")
+      await pg.waitForFunction(() => document.querySelector("[data-moharrik-chat]").shadowRoot.querySelector("[name=email]").getAttribute("aria-invalid") === "true")
+      const v = await inWidget(pg, (r) => ({
+        form: !r.querySelector(".pre").hidden,
+        err: r.querySelector(`#${r.querySelector("[name=email]").id}-e`).textContent,
+        focus: r.activeElement?.getAttribute("name"),
+        msg: r.querySelector(".pre .ta").value,
+      }))
+      assert.ok(v.form, "the form stays")
+      assert.match(v.err, /email/i)
+      assert.equal(v.focus, "email")
+      assert.equal(v.msg, "Still there?")
+      await ctx.close()
+    })
+
+    await step("a dropped connection on the first send keeps the form and the message", async () => {
+      const { ctx, pg } = await fresh(DESKTOP, "en")
+      await fillForm(pg)
+      // The network fails the first send (the browser would retry a socket
+      // the server cuts, so the request is aborted in the browser instead).
+      await pg.setRequestInterception(true)
+      let aborted = 0
+      const onReq = (r) => (r.method() === "POST" && r.url().endsWith("/messages") && !aborted++ ? r.abort("internetdisconnected") : r.continue())
+      pg.on("request", onReq)
+      await click(pg, ".go")
+      await pg.waitForFunction(() => !document.querySelector("[data-moharrik-chat]").shadowRoot.querySelector(".err").hidden)
+      pg.off("request", onReq)
+      await pg.setRequestInterception(false)
+      const v = await inWidget(pg, (r) => ({ form: !r.querySelector(".pre").hidden, msg: r.querySelector(".pre .ta").value, name: r.querySelector("[name=name]").value }))
+      assert.ok(v.form, "the form stays up")
+      assert.equal(v.msg, "Still there?")
+      assert.equal(v.name, "Liam")
+      await click(pg, ".go")
+      await pg.waitForFunction(() => window.MoharrikChat.visitorToken())
+      assert.equal(state.posts.at(-1).email, "o'connor@example.test")
+      await ctx.close()
+    })
+
+    await step("a config that arrives late brings the form without losing the draft", async () => {
+      state.configDelayMs = 800
+      const { ctx, pg } = await fresh(DESKTOP, "en")
+      await pg.evaluate(() => window.MoharrikChat.open())
+      await type(pg, ".form .ta", "typed early")
+      await pg.waitForFunction(() => !document.querySelector("[data-moharrik-chat]").shadowRoot.querySelector(".pre").hidden, { timeout: 5000 })
+      await new Promise((r) => setTimeout(r, 50))
+      const v = await inWidget(pg, (r) => ({ msg: r.querySelector(".pre .ta").value, focus: r.activeElement?.getAttribute("name") }))
+      assert.equal(v.msg, "typed early")
+      assert.equal(v.focus, "name")
       await ctx.close()
     })
 

@@ -235,6 +235,10 @@ function writeStorage(k: string, v: string | null) {
   }
 }
 
+// A plain address: a dot-atom, a dotted domain, a letter TLD. The server's
+// visitorEmail (moharrik internal/inbox/prechat.go) checks the same shape.
+const EMAIL = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$/
+
 /**
  * Contact details the server would accept: a name, and a plausible email or a
  * phone with its country code. The server has the last word; this only spares
@@ -245,7 +249,7 @@ export function checkVisitor(v: Visitor | null | undefined): "name" | "email" | 
   const email = (v?.email ?? "").trim()
   const phone = toAsciiDigits((v?.phone ?? "").trim())
   if (!name) return "name"
-  if (email && !/^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]{2,}$/.test(email)) return "email"
+  if (email && (email.length > 254 || !EMAIL.test(email))) return "email"
   if (phone) {
     const digits = phone.replace(/\D/g, "").replace(/^00/, "")
     if (!/^(\+|00)/.test(phone) || digits.length < 8 || digits.length > 15) return "phone"

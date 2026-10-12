@@ -42,6 +42,7 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
   const { key, apiOrigin, locale, pollInterval, persist, storagePrefix } = options
   const visitorName = options.visitor?.name
   const visitorEmail = options.visitor?.email
+  const visitorPhone = options.visitor?.phone
 
   const client = useMemo(
     () =>
@@ -52,9 +53,12 @@ export function useMoharrikChat(options: ChatOptions): UseMoharrikChat {
         pollInterval,
         persist,
         storagePrefix,
-        visitor: visitorName || visitorEmail ? { name: visitorName, email: visitorEmail } : undefined,
+        visitor:
+          visitorName || visitorEmail || visitorPhone
+            ? { name: visitorName, email: visitorEmail, phone: visitorPhone }
+            : undefined,
       }),
-    [key, apiOrigin, locale, pollInterval, persist, storagePrefix, visitorName, visitorEmail],
+    [key, apiOrigin, locale, pollInterval, persist, storagePrefix, visitorName, visitorEmail, visitorPhone],
   )
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -139,6 +143,7 @@ export function MoharrikChat({ widgetKey, defaultOpen, onReady, ...rest }: Mohar
   const { apiOrigin, locale, theme, position, accent, greeting, title, launcher, pollInterval, persist, storagePrefix } = rest
   const visitorName = rest.visitor?.name
   const visitorEmail = rest.visitor?.email
+  const visitorPhone = rest.visitor?.phone
 
   useEffect(() => {
     if (typeof window === "undefined") return // SSR: mount on the client only
@@ -155,7 +160,10 @@ export function MoharrikChat({ widgetKey, defaultOpen, onReady, ...rest }: Mohar
       pollInterval,
       persist,
       storagePrefix,
-      visitor: visitorName || visitorEmail ? { name: visitorName, email: visitorEmail } : undefined,
+      visitor:
+          visitorName || visitorEmail || visitorPhone
+            ? { name: visitorName, email: visitorEmail, phone: visitorPhone }
+            : undefined,
     })
     ref.current = widget
     if (defaultOpen) widget.open()
@@ -179,6 +187,7 @@ export function MoharrikChat({ widgetKey, defaultOpen, onReady, ...rest }: Mohar
     storagePrefix,
     visitorName,
     visitorEmail,
+    visitorPhone,
     defaultOpen,
   ])
 

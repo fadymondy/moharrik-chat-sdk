@@ -486,6 +486,7 @@ export function mount(options: WidgetOptions): ChatWidget {
   let lastAt = 0
   let shownClosed = false
   let formForced = false
+  let formWasOn = false
 
   const showingForm = () => (formForced || client.needsContact()) && client.messages().length === 0
 
@@ -540,6 +541,14 @@ export function mount(options: WidgetOptions): ChatWidget {
 
   function render(messages: ChatMessage[], full = false) {
     const formOn = showingForm()
+    if (formOn && !formWasOn) {
+      // The composer gives way to the form (a late config, or a server that
+      // wants contact details): carry what was typed, and keep focus inside.
+      const msg = input("message")
+      if (!msg.value.trim() && ta.value.trim()) msg.value = ta.value
+      if (root.activeElement === ta) queueMicrotask(() => input(input("name").value ? "message" : "name").focus({ preventScroll: true }))
+    }
+    formWasOn = formOn
     pre.hidden = !formOn
     form.hidden = formOn
     const closed = client.status() === "closed"
@@ -640,10 +649,24 @@ export function mount(options: WidgetOptions): ChatWidget {
       // The error event already surfaced it; the typed text is kept. A server
       // that wants contact details the widget did not know about shows the form.
       if ((e as { kind?: string })?.kind === "contact_required") {
+        const fromForm = formWasOn
         formForced = true
         if (!showingForm()) return false
         const msg = input("message")
         if (!msg.value) msg.value = text
+        render(client.messages(), true)
+        // The server checked what the form let through: say which field, in
+        // the visitor's language, and go there.
+        if (fromForm) {
+          const why = String((e as { message?: string }).message ?? "").toLowerCase()
+          const field = /email or a phone/.test(why) ? "contact" : /name/.test(why) ? "name" : /phone/.test(why) ? "phone" : "email"
+          if (field === "contact") {
+            setFieldError("email", t.errContact)
+            setFieldError("phone", " ")
+          } else setFieldError(field, field === "name" ? t.errName : field === "phone" ? t.errPhone : t.errEmail)
+          input(field === "contact" ? "email" : field).focus()
+        }
+        return false
       }
       render(client.messages(), true)
       return false
@@ -693,6 +716,9 @@ export function mount(options: WidgetOptions): ChatWidget {
       return
     }
     client.setVisitor(v)
+    // The form stays until the first message is actually in: a dropped
+    // connection leaves the visitor where they were, their words intact.
+    formForced = true
     if (await submit(message)) {
       input("message").value = ""
       ta.focus()
