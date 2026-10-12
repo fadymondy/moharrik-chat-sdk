@@ -50,8 +50,17 @@ page that embeds the key without anyone re-pasting the snippet.
 
 ### What the widget does
 
-- **Greeting and presence.** The panel opens on your greeting. Its header says whether anyone on
-  your team is around: online, away, or a plain "we reply here as soon as we can".
+- **Greeting and presence.** The panel opens on your greeting. Its header shows your workspace's
+  name and picture (initials on your accent when there is no picture) and whether anyone on your
+  team is around: online, away, or a plain "we reply here as soon as we can".
+- **Contact details first.** When the widget asks for them (on by default, a per-widget setting), a
+  new visitor gives a name and an email or a phone number with its country code before the first
+  message. The server files them as a CRM contact — linking an existing one with that address,
+  never editing it. They are remembered on that browser, so a returning visitor is not asked again.
+- **The thread.** Messages are grouped by sender with a time under each run and a day separator
+  (Today, Yesterday, a date); a typing bubble shows while an agent writes.
+- **Mobile, RTL, accessible.** Full screen under 480px wide; right-to-left in Arabic; a labelled
+  dialog that closes on Esc and returns focus; visible focus rings; respects reduced motion.
 - **Live replies.** While the page is open, replies arrive over a live stream (Server-Sent Events) and
   the launcher shows an unread count. If the stream cannot connect, the widget polls instead.
 - **Typing indicators, both ways.** When an agent is composing a reply, the header swaps its
@@ -66,7 +75,7 @@ page that embeds the key without anyone re-pasting the snippet.
 - **Lead event.** The visitor's first message dispatches a `moharrik:lead` DOM event on `window`
   (`detail: { lead_type: "chat", widget_key }`). When the widget is set to report leads, it also sends a
   `generate_lead` event to `gtag` and `dataLayer`, if the page has them.
-| `data-visitor-name`, `data-visitor-email` | — | Attach who this is, if you already know. |
+| `data-visitor-name`, `data-visitor-email`, `data-visitor-phone` | — | Attach who this is, if you already know (the form is then skipped). |
 
 Open it from your own button:
 
@@ -239,12 +248,18 @@ chat.stop()    // when your UI closes
 | `pollInterval` | `5000` | How often to check for replies, in ms (min 1000). |
 | `persist` | `true` | Remember the conversation across reloads (localStorage). |
 | `storagePrefix` | `moharrik.chat` | Change it if one page runs two widgets. |
-| `visitor` | — | `{ name, email }` attached when the conversation is created. |
+| `visitor` | — | `{ name, email, phone }` attached when the conversation is created. |
 | `fetchImpl` | `globalThis.fetch` | Bring your own fetch (tests, SSR). |
 
 `ChatClient`: `send(body)`, `refresh()`, `start()`, `stop()`, `markRead()`, `setComposing(composing)`,
 `messages()`, `status()`, `presence()`, `unread()`, `isAgentTyping()`, `isLive()`,
-`visitorToken()`, `reset()`, `on(event, handler)`, `destroy()`.
+`visitorToken()`, `visitor()`, `setVisitor(v)`, `needsContact()`, `reset()`, `on(event, handler)`,
+`destroy()`.
+
+`needsContact()` is true when the widget asks for contact details, no conversation has started and
+the visitor so far is not enough. Collect them in your own UI, check them with the exported
+`checkVisitor(v)` (returns the field at fault — `"name"`, `"email"`, `"phone"`, `"contact"` — or
+`null`), then `setVisitor(v)` and `send(body)`. `setVisitor` remembers them on this browser.
 
 Events: `messages`, `status`, `error`, `conversation`, `config`, `presence`, `unread`, `lead`, `live`,
 `agentTyping`.
@@ -269,6 +284,7 @@ Everything `createChat` takes, plus `target`, `launcher`, `theme`, `position`, `
 | `blocked` | This origin is not on the key's allow-list, or the widget is disabled (403). |
 | `unknown` | No widget with that key (404). |
 | `too_long` | Over the 8,000 character limit. |
+| `contact_required` | The widget wants a name and an email or phone first, or one was not valid (422). |
 | `network` | The request never reached the server. |
 | `server` | The server answered with something else. |
 
@@ -293,6 +309,7 @@ npm install
 npm run build      # dist/: ESM + CJS + types, and the script-tag bundle
 npm run typecheck
 npm test
+npm run e2e        # the widget in headless Chrome against a mock API; SHOTS=dir saves screenshots
 ```
 
 `dist/chat.js` is the file a Moharrik app serves at `/chat/v1.js`. This repo is where it is edited;
