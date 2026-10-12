@@ -46,6 +46,7 @@ const state = {
   configRequires: true,
   configDelayMs: 0,
   reject: "", // a 422 detail for the next first send
+  failRefresh: false, // a 503 for the next thread read
   posts: [],
   threads: new Map(), // token -> messages
   streams: new Map(), // token -> [res]
@@ -127,6 +128,10 @@ const server = http.createServer((req, res) => {
     state.streams.set(token, list)
     req.on("close", () => state.streams.set(token, (state.streams.get(token) ?? []).filter((r) => r !== res)))
     return
+  }
+  if (what === "messages" && req.method === "GET" && state.failRefresh) {
+    state.failRefresh = false
+    return json(res, 503, { detail: "busy" })
   }
   if (what === "messages" && req.method === "GET") {
     const token = url.searchParams.get("visitor_token")
@@ -471,6 +476,20 @@ try {
       const v = await inWidget(pg, (r) => ({ msg: r.querySelector(".pre .ta").value, focus: r.activeElement?.getAttribute("name") }))
       assert.equal(v.msg, "typed early")
       assert.equal(v.focus, "name")
+      assert.equal(await inWidget(pg, (r) => r.querySelector(".form .ta").value), "", "the draft moved, not copied")
+      // The message goes in, but the thread read after it fails: the form
+      // still gives way to the composer, which holds no stale draft.
+      await type(pg, "[name=name]", "Liam")
+      await type(pg, "[name=email]", "liam@example.test")
+      await type(pg, ".pre .ta", "typed early, then edited")
+      state.failRefresh = true
+      await click(pg, ".go")
+      await pg.waitForFunction(() => window.MoharrikChat.visitorToken())
+      await pg.waitForFunction(() => document.querySelector("[data-moharrik-chat]").shadowRoot.querySelector(".pre").hidden)
+      const after = await inWidget(pg, (r) => ({ composer: !r.querySelector(".form").hidden, draft: r.querySelector(".form .ta").value }))
+      assert.ok(after.composer)
+      assert.equal(after.draft, "")
+      state.failRefresh = false
       await ctx.close()
     })
 

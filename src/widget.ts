@@ -545,7 +545,11 @@ export function mount(options: WidgetOptions): ChatWidget {
       // The composer gives way to the form (a late config, or a server that
       // wants contact details): carry what was typed, and keep focus inside.
       const msg = input("message")
-      if (!msg.value.trim() && ta.value.trim()) msg.value = ta.value
+      if (!msg.value.trim() && ta.value.trim()) {
+        msg.value = ta.value
+        ta.value = "" // the form owns it now: no stale copy when the composer returns
+        ta.style.height = ""
+      }
       if (root.activeElement === ta) queueMicrotask(() => input(input("name").value ? "message" : "name").focus({ preventScroll: true }))
     }
     formWasOn = formOn
@@ -644,6 +648,9 @@ export function mount(options: WidgetOptions): ChatWidget {
         ta.style.height = ""
       }
       formForced = false
+      // The thread refresh after a send can fail on its own; the message is in
+      // either way, so the composer replaces the form now, not on the next poll.
+      render(client.messages(), true)
       return true
     } catch (e) {
       // The error event already surfaced it; the typed text is kept. A server

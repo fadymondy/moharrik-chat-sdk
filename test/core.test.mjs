@@ -590,7 +590,7 @@ test("checkVisitor takes the addresses the server takes", () => {
   for (const email of ["mona@shop.test", "o'connor@shop.test", "a.b+tag@mail.shop.co"]) {
     assert.equal(checkVisitor({ name: "Mona", email }), null, email)
   }
-  for (const email of ["mona@", "mo..na@shop.test", "mona@shop", "Mona <mona@shop.test>", "mona@-shop.test", `${"a".repeat(250)}@x.co`]) {
+  for (const email of ["mona@", "mo..na@shop.test", "mona@shop", "Mona <mona@shop.test>", "mona@-shop.test", `${"a".repeat(196)}@x.co`]) {
     assert.equal(checkVisitor({ name: "Mona", email }), "email", email)
   }
   assert.equal(checkVisitor({ name: "", email: "mona@shop.test" }), "name")
