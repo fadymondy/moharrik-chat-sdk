@@ -661,6 +661,10 @@ export function mount(options: WidgetOptions): ChatWidget {
         if (!showingForm()) return false
         const msg = input("message")
         if (!msg.value) msg.value = text
+        if (ta.value.trim() === text) {
+          ta.value = "" // moved into the form, not copied
+          ta.style.height = ""
+        }
         render(client.messages(), true)
         // The server checked what the form let through: say which field, in
         // the visitor's language, and go there.

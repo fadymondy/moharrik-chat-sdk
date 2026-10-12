@@ -412,6 +412,7 @@ try {
       await pg.keyboard.press("Enter")
       await pg.waitForFunction(() => !document.querySelector("[data-moharrik-chat]").shadowRoot.querySelector(".pre").hidden)
       assert.equal(await inWidget(pg, (r) => r.querySelector(".pre .ta").value), "hello?", "the typed message moves into the form")
+      assert.equal(await inWidget(pg, (r) => r.querySelector(".form .ta").value), "", "and leaves the composer")
       state.configRequires = true
       await ctx.close()
     })
