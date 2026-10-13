@@ -38,7 +38,7 @@ configure. Options go on the same tag:
 | `data-theme` | the visitor's system setting | `light` or `dark`. |
 | `data-position` | `end` | `start` pins it to the other side. |
 | `data-accent` | `#00A0A8` | Brand colour for the launcher, header and the visitor's bubbles. |
-| `data-title` | "Chat with us" | Panel title. |
+| `data-title` | "Chat with us" | The launcher's label and the panel's title. |
 | `data-greeting` | — | First line shown in an empty panel. |
 | `data-greeting-ar`, `data-title-ar` | — | The same, when the widget runs in Arabic. |
 | `data-launcher` | `true` | `false` hides the floating button — open it yourself. |

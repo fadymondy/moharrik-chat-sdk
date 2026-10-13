@@ -51,7 +51,7 @@ export type WidgetOptions = ChatOptions & {
   greeting?: string
   /** The greeting when the widget runs in Arabic. */
   greetingAr?: string
-  /** Panel title (default "Chat with us" / "تحدّث معنا"). */
+  /** Panel and launcher title (default "Chat with us" / "تحدّث معنا"). */
   title?: string
   titleAr?: string
   /**
@@ -370,6 +370,7 @@ export function mount(options: WidgetOptions): ChatWidget {
   const pre = $<HTMLFormElement>(".pre")
   const preBtn = $<HTMLButtonElement>(".go")
   const launcher = root.querySelector(".btn") as HTMLButtonElement | null
+  const launcherLbl = launcher?.querySelector(".lbl") as HTMLElement | null
   const badge = root.querySelector(".badge") as HTMLElement | null
   const closeBtn = $<HTMLButtonElement>(".x")
   const input = (n: string) => pre.querySelector(`[name=${n}]`) as HTMLInputElement | HTMLTextAreaElement
@@ -416,6 +417,10 @@ export function mount(options: WidgetOptions): ChatWidget {
     style.textContent = css(current.accent, dark, rtl, current.position === "start")
     titleEl.textContent = current.name
     panel.setAttribute("aria-label", current.title)
+    // The launcher says the title too (data-title / data-title-ar, or the
+    // widget's settings), so "Chat with me" is not stuck on "Chat with us".
+    if (launcherLbl) launcherLbl.textContent = current.title
+    paintBadge(client.unread())
     avIni.textContent = initials(current.name)
     const pic = cfg?.avatar_url ?? ""
     if (pic && avImg.getAttribute("src") !== pic) avImg.src = pic
@@ -449,7 +454,7 @@ export function mount(options: WidgetOptions): ChatWidget {
     const show = n > 0 && !isOpen()
     badge.hidden = !show
     badge.textContent = n > 9 ? "9+" : String(n)
-    launcher?.setAttribute("aria-label", show ? `${t.launcher} (${n} ${t.unread})` : isOpen() ? t.close : t.launcher)
+    launcher?.setAttribute("aria-label", show ? `${current.title} (${n} ${t.unread})` : isOpen() ? t.close : current.title)
   }
 
   // ---- time -------------------------------------------------------------------
