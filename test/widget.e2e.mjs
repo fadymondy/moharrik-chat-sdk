@@ -262,6 +262,14 @@ try {
     const { ctx, pg } = await fresh(DESKTOP, "en")
     await shot(pg, "desktop-en-1-closed")
 
+    await step("the launcher says the widget's title, not a fixed label", async () => {
+      await pg.waitForFunction(
+        () => document.querySelector("[data-moharrik-chat]").shadowRoot.querySelector(".btn .lbl").textContent === "Chat with Fady",
+      )
+      const label = await inWidget(pg, (r) => r.querySelector(".btn").getAttribute("aria-label"))
+      assert.equal(label, "Chat with Fady")
+    })
+
     await step("the header names the business, with its picture", async () => {
       await pg.evaluate(() => window.MoharrikChat.open())
       await pg.waitForFunction(() => document.querySelector("[data-moharrik-chat]").shadowRoot.querySelector(".panel.open"))
@@ -514,6 +522,7 @@ try {
       assert.equal(a.w, 390)
       assert.equal(a.h, 844)
       assert.equal(a.start, "ابدأ المحادثة")
+      assert.equal(await inWidget(pg, (r) => r.querySelector(".btn .lbl").textContent), "تحدّث مع فادي")
       assert.ok(a.launcherHidden, "the close button in the header takes over")
       await shot(pg, "mobile-ar-2-open-form")
       await type(pg, "[name=name]", "منى عادل")
